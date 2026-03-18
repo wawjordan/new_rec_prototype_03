@@ -38,8 +38,8 @@ module project_inputs
   private
   public :: allocate_inputs, deallocate_inputs
   public :: job_name, verbose_level
-  public :: n_dim, rec_degree, n_rec_vars, n_nodes, n_ghost, n_skip, limit
-  public :: column_scaling, local_scaling
+  public :: n_dim, rec_degree, n_rec_vars, n_nodes, n_ghost, n_skip
+  public :: column_scaling, local_scaling, use_tci
   public :: use_cweno, epsilon_cweno, r_cweno, lambda_0_cweno, use_cwenoz
   public :: geom_space_r, grid_perturb
   public :: out_quad_order, out_derivatives
@@ -56,9 +56,9 @@ module project_inputs
   integer, dimension(3) :: n_nodes       = [9,1,1]
   integer, dimension(3) :: n_ghost       = [0,0,0]
   integer, dimension(3) :: n_skip        = [1,1,1]
-  logical  :: limit         = .false.
   logical  :: column_scaling   = .true.
   logical  :: local_scaling    = .true.
+  logical  :: use_tci          = .true.
   logical  :: use_cweno        = .false.
   logical  :: use_cwenoz       = .false.
   real(dp) :: epsilon_cweno    = 1.0e-14_dp
@@ -334,8 +334,8 @@ end module namelist_helper
 module nml_project
   use namelist_helper, only : nml_warnings
   use project_inputs, only : job_name, verbose_level, n_dim, rec_degree,       &
-                             n_rec_vars, n_nodes, n_ghost, n_skip, limit,      &
-                             column_scaling, local_scaling,                    &
+                             n_rec_vars, n_nodes, n_ghost, n_skip,             &
+                             column_scaling, local_scaling, use_tci,           &
                              use_cweno, epsilon_cweno, r_cweno, lambda_0_cweno,&
                              use_cwenoz, grid_perturb, geom_space_r,           &
                              out_quad_order, out_derivatives
@@ -344,8 +344,8 @@ module nml_project
   public :: read_nml_project
   public :: write_nml_project
   namelist /project/ job_name, verbose_level, n_dim, n_rec_vars, rec_degree,   &
-                     n_nodes, n_ghost, n_skip, limit, column_scaling,          &
-                     local_scaling,                                            &
+                     n_nodes, n_ghost, n_skip, column_scaling, local_scaling,  &
+                     use_tci,                                                  &
                      use_cweno, epsilon_cweno, r_cweno, lambda_0_cweno,        &
                      use_cwenoz, grid_perturb, geom_space_r,                   &
                      out_quad_order, out_derivatives
@@ -368,9 +368,9 @@ contains
     n_nodes       = [9,1,1]
     n_ghost       = [0,0,0]
     n_skip        = [1,1,1]
-    limit         = .false.
     column_scaling   = .true.
     local_scaling    = .true.
+    use_tci          = .true.
     use_cweno        = .false.
     use_cwenoz       = .false.
     epsilon_cweno    = 1.0e-14_dp
@@ -2047,30 +2047,6 @@ contains
     end do
   end function nchoosek
 
-  ! pure subroutine get_exponents(n_dim,degree,n_terms,exponents,idx)
-  !   use index_conversion, only : global2local
-  !   integer, intent(in) :: n_dim, degree, n_terms
-  !   integer, dimension(n_dim,n_terms), intent(out) :: exponents
-  !   integer, dimension(degree+1),      intent(out) :: idx
-  !   integer :: curr_total_degree, j, cnt, N_full_terms
-  !   integer, dimension(n_dim) :: tmp_exp, nsub
-  !   cnt = 0
-  !   do curr_total_degree = 0,degree
-  !     ! idx(curr_total_degree+1) = cnt + 1
-  !     N_full_terms = (curr_total_degree+1) ** n_dim
-  !     do j = 0,N_full_terms
-  !       nSub = curr_total_degree + 1
-  !       tmp_exp = global2local(j+1,nsub)-1
-  !       if ( sum(tmp_exp) == curr_total_degree ) then
-  !         cnt = cnt + 1
-  !         exponents(:,cnt) = tmp_exp
-  !       end if
-  !     end do
-  !     idx(curr_total_degree+1) = cnt
-  !     tmp_exp = 0
-  !   end do
-  ! end subroutine get_exponents
-
   pure subroutine get_exponents(n_dim,degree,n_terms,exponents,idx,diff_idx)
     use index_conversion, only : global2local
     integer, intent(in) :: n_dim, degree, n_terms
@@ -2122,7 +2098,7 @@ module math
   public :: cross_product, det_3x3, vector_norm
   public :: LUdecomp, LUsolve, mat_inv
   public :: LegendrePolynomialAndDerivative, LegendreGaussNodesAndWeights
-  public :: maximal_diameter, maximal_extents
+  public :: maximal_extents
   public :: rand_int_in_range
   public :: compute_pseudo_inverse
   public :: careful_divide
@@ -2337,23 +2313,6 @@ contains
     end if
   end subroutine LegendreGaussNodesAndWeights
 
-  pure function maximal_diameter(dim,n_points,points) result(d)
-    use set_constants, only : zero
-    integer, intent(in) :: dim, n_points
-    real(dp), dimension(dim,n_points), intent(in) :: points
-    real(dp) :: d
-    real(dp), dimension(dim) :: delta
-    integer :: i, j
-    d = zero
-    do j = 1,n_points-1
-      do i = j+1,n_points
-        delta = points(:,j) - points(:,i)
-        d = max(d,dot_product(delta,delta))
-      end do
-    end do
-    d = sqrt(d)
-  end function maximal_diameter
-
   pure function maximal_extents(dim,n_points,points) result(d)
     use set_constants, only : half
     integer, intent(in) :: dim, n_points
@@ -2381,7 +2340,8 @@ contains
     external dgesvd
 
     integer,                          intent(in)  :: LHS_m, LHS_n
-    real(dp), dimension(LHS_m,LHS_n), intent(in)  :: LHS
+    ! real(dp), dimension(LHS_m,LHS_n), intent(in)  :: LHS
+    real(dp), dimension(:,:),         intent(in)  :: LHS
     real(dp), dimension(LHS_n,LHS_m), intent(out) :: LHS_plus
     real(dp), optional,               intent(out) :: cond
 
@@ -2409,7 +2369,7 @@ contains
     ! Setup
     LHS_plus = zero
 
-    LHS_cpy = LHS
+    LHS_cpy = LHS(1:LHS_m,1:LHS_n)
 
     ! Define SVD Parameters
     LDA   = LHS_m
@@ -5910,119 +5870,6 @@ pure function evaluate_reconstruction( this, p, point, coefs, n_terms, n_var, va
 
 end module zero_mean_basis_derived_type
 
-module zero_mean_limiter_type
-  use set_precision, only : dp
-  use monomial_basis_derived_type, only : monomial_basis_t
-  use zero_mean_basis_derived_type, only : zero_mean_basis_t
-  implicit none
-  private
-  public :: zero_mean_limit_t
-
-  type :: zero_mean_limit_t
-    integer  :: n_vars
-    integer,  dimension(:), allocatable :: var_idx
-    real(dp), dimension(:), allocatable :: v_min, v_max, alpha
-  contains
-    private
-    procedure, public, pass :: destroy        => destroy_limiter
-    procedure, public, pass :: update_limiter => update_alpha
-    procedure, public, pass :: update_min_max_point
-  end type zero_mean_limit_t
-  interface zero_mean_limit_t
-    module procedure constructor
-  end interface zero_mean_limit_t
-contains
-  pure elemental subroutine destroy_limiter( this )
-    class(zero_mean_limit_t), intent(inout) :: this
-    if ( allocated(this%v_min)   ) deallocate( this%v_min )
-    if ( allocated(this%v_max)   ) deallocate( this%v_max )
-    if ( allocated(this%alpha)   ) deallocate( this%alpha )
-    if ( allocated(this%var_idx) ) deallocate( this%var_idx )
-    this%n_vars = 0
-  end subroutine destroy_limiter
-
-  pure function constructor( var_idx ) result( this )
-    use set_constants, only : one, large
-    integer, dimension(:), intent(in) :: var_idx
-    type(zero_mean_limit_t)           :: this
-    call this%destroy()
-    this%n_vars = size(var_idx)
-    allocate( this%v_min(   this%n_vars ) )
-    allocate( this%v_max(   this%n_vars ) )
-    allocate( this%alpha(   this%n_vars ) )
-    allocate( this%var_idx( this%n_vars ) )
-    this%var_idx =  var_idx
-    this%v_min   =  large
-    this%v_max   = -large
-    this%alpha   =  one
-  end function constructor
-
-  ! pure function get_alpha_val_1(n_dim,grad,dx,u_c,u_min,u_max) result(alpha)
-  !   use set_constants, only : near_zero, one
-  !   use math,          only : careful_divide
-  !   integer,                    intent(in) :: n_dim
-  !   real(dp), dimension(n_dim), intent(in) :: grad, dx
-  !   real(dp),                   intent(in) :: u_c, u_min, u_max
-  !   real(dp)                               :: alpha
-  !   real(dp) :: num, den, tmp
-  !   alpha = one
-  !   if (sum(abs(dx))<near_zero)   return
-  !   if (sum(abs(grad))<near_zero) return
-  !   den = dot_product(grad,dx)
-  !   num = merge(u_max,u_min,den>0) - u_c
-  !   alpha = min(one,careful_divide(num,den))
-  !   tmp = near_zero ! anchor for debugging
-  ! end function get_alpha_val_1
-
-  pure elemental function get_alpha_val(u_c,u_i,u_min,u_max) result(alpha)
-    use set_constants, only : zero, one, near_zero
-    real(dp),                   intent(in) :: u_i, u_c, u_min, u_max
-    real(dp)                               :: alpha
-    real(dp) :: diff, alpha_tmp
-    diff = u_i - u_c
-    if ( abs(diff) < near_zero ) then
-      alpha = one
-    elseif ( diff > zero ) then
-      alpha_tmp = (u_max - u_c)/diff
-      alpha = min(one,alpha_tmp)
-    elseif ( diff < zero ) then
-      alpha_tmp = (u_min - u_c)/diff
-      alpha = min(one,alpha_tmp)
-    end if
-    diff = alpha
-  end function get_alpha_val
-
-  pure subroutine update_min_max_point( this, p, basis, coefs, point )
-    class(zero_mean_limit_t),     intent(inout) :: this
-    class(monomial_basis_t),      intent(in)    :: p
-    class(zero_mean_basis_t),     intent(in)    :: basis
-    real(dp), dimension(:,:),     intent(in)    :: coefs
-    real(dp), dimension(p%n_dim), intent(in)    :: point
-    real(dp), dimension(this%n_vars) :: val
-    val = basis%rec_eval(p,point,coefs,p%n_terms,this%n_vars,this%var_idx)
-    this%v_min = min( this%v_min, val )
-    this%v_max = max( this%v_max, val )
-  end subroutine update_min_max_point
-
-
-  ! call this for the corresponding cell vertices / quad_pts
-  pure subroutine update_alpha( this, p, basis, point, coefs )
-    use set_constants, only : zero, one, near_zero
-    class(zero_mean_limit_t), intent(inout) :: this
-    class(monomial_basis_t),  intent(in)    :: p
-    class(zero_mean_basis_t), intent(in)    :: basis
-    real(dp), dimension(:),   intent(in)    :: point
-    real(dp), dimension(:,:), intent(in)    :: coefs
-    real(dp), dimension(this%n_vars) :: u_c, u_i, u_min, u_max, alpha
-    u_c   = coefs(1,this%var_idx)
-    u_i   = basis%rec_eval(p,point,coefs,p%n_terms,this%n_vars,this%var_idx)
-    u_min = this%v_min
-    u_max = this%v_max
-    alpha = get_alpha_val( u_c, u_i, this%v_min, this%v_max )
-    this%alpha = min( this%alpha, alpha )
-  end subroutine update_alpha
-end module zero_mean_limiter_type
-
 module reconstruct_cell_derived_type
   use set_precision,                only : dp
   use monomial_basis_derived_type,  only : monomial_basis_t
@@ -6037,9 +5884,8 @@ module reconstruct_cell_derived_type
     real(dp), dimension(:,:),   allocatable :: coefs
     real(dp), dimension(:,:),   allocatable :: Ainv
     real(dp), dimension(:,:,:), allocatable :: Ainv_sec
-    real(dp), dimension(:,:),   allocatable :: col_scale_sec
     real(dp), dimension(:,:,:), allocatable :: coefs_sec
-    real(dp), dimension(:,:),   allocatable :: LHS, M, M1
+    real(dp), dimension(:,:),   allocatable :: TCI_mat
     integer :: n_vars
     integer :: self_idx
     integer :: self_block
@@ -6053,12 +5899,9 @@ module reconstruct_cell_derived_type
     procedure, public, pass :: set_cell_avg => set_cell_avg_func, set_cell_avg_val
     procedure, public, pass :: set_cell_coefs, get_cell_error
     procedure, public, pass :: get_sector_stencil_idx
-    procedure, public, pass :: get_nonlinear_weights, get_nonlinear_weights_z, cweno
-    procedure, public, pass :: get_self_osc_indicator, get_nbor_osc_indicator
-    procedure,         pass :: linear_weights, linear_weights2
-    procedure,         pass :: modify_coefs, get_oscillation_indicators
+    procedure,         pass :: linear_weights, modify_coefs, get_oscillation_indicators
     procedure, public, pass :: get_cweno_weights, get_cwenoz_weights, get_aicwenoz_weights
-    procedure, public, pass :: apply_cweno, get_mu
+    procedure, public, pass :: apply_cweno, get_mu, troubled_cell_indicator, cweno
   end type rec_cell_t
 
   interface rec_cell_t
@@ -6076,13 +5919,9 @@ contains
     if ( allocated(this%sec_idx    ) ) deallocate( this%sec_idx    )
     if ( allocated(this%coefs      ) ) deallocate( this%coefs      )
     if ( allocated(this%Ainv       ) ) deallocate( this%Ainv       )
-    if ( allocated(this%col_scale  ) ) deallocate( this%col_scale  )
-    if ( allocated(this%coefs_sec      ) ) deallocate( this%coefs_sec      )
-    if ( allocated(this%Ainv_sec       ) ) deallocate( this%Ainv_sec       )
-    if ( allocated(this%col_scale_sec  ) ) deallocate( this%col_scale_sec  )
-    if ( allocated(this%LHS  ) ) deallocate( this%LHS  )
-    if ( allocated(this%M1  ) ) deallocate( this%M1  )
-    if ( allocated(this%M  ) ) deallocate( this%M  )
+    if ( allocated(this%coefs_sec  ) ) deallocate( this%coefs_sec  )
+    if ( allocated(this%Ainv_sec   ) ) deallocate( this%Ainv_sec   )
+    if ( allocated(this%TCI_mat    ) ) deallocate( this%TCI_mat    )
     this%n_vars     = 0
     this%self_idx   = 0
     this%self_block = 0
@@ -6094,7 +5933,7 @@ contains
   pure function constructor( p, self_block, self_idx, n_nbor, n_bnd, n_sec, nbor_block, nbor_idx, nbor_degree, bnd_idx, sec_idx, n_vars, quad, h_ref ) result(this)
     use set_constants, only : zero,one
     use quadrature_derived_type, only : quad_t
-    use project_inputs,          only : use_cweno
+    use project_inputs,          only : use_cweno, use_tci
     type(monomial_basis_t), intent(in)    :: p
     integer,                intent(in)    :: self_block, self_idx, n_nbor, n_bnd, n_sec
     integer, dimension(:),  intent(in)    :: nbor_block, nbor_idx, nbor_degree, bnd_idx, sec_idx
@@ -6102,115 +5941,93 @@ contains
     type(quad_t),           intent(in)    :: quad
     real(dp), dimension(:), intent(in)    :: h_ref
     type(rec_cell_t)                      :: this
-    integer :: n_sec_cells
+    integer :: n_sec_cells, nn
 
     
     call this%destroy()
     this%basis = zero_mean_basis_t( p, quad, h_ref )
-    this%n_vars     = n_vars
-    this%self_idx   = self_idx
-    this%self_block = self_block
-    this%n_nbor     = n_nbor
-    this%n_bnd      = n_bnd
     allocate( this%nbor_block(  n_nbor ) )
     allocate( this%nbor_idx(    n_nbor ) )
     allocate( this%nbor_degree( n_nbor ) )
-    allocate( this%bnd_idx( n_bnd ) )
-    allocate( this%coefs( p%n_terms, n_vars ) )
+    allocate( this%bnd_idx(      n_bnd ) )
+    allocate( this%coefs( p%n_terms,   n_vars ) )
     allocate( this%Ainv(  p%n_terms-1, n_nbor ) )
-    allocate( this%col_scale( p%n_terms-1     ) )
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    allocate( this%LHS(  n_nbor, p%n_terms-1 ) )
-    allocate( this%M1( n_nbor, n_nbor ) )
-    allocate( this%M( 2*p%n_dim - n_bnd, 2*p%n_dim - n_bnd) )
-    this%LHS = zero
-    this%M1  = zero
-    this%M   = zero
 
+    this%n_vars      = n_vars
+    this%self_idx    = self_idx
+    this%self_block  = self_block
+    this%n_nbor      = n_nbor
+    this%n_bnd       = n_bnd
     this%nbor_block  = nbor_block(1:n_nbor)
     this%nbor_idx    = nbor_idx(1:n_nbor)
     this%nbor_degree = nbor_degree(1:n_nbor)
     this%bnd_idx     = bnd_idx(1:n_bnd)
-    
     this%coefs       = zero
     this%Ainv        = zero
-    this%col_scale   = one
+
     if ( use_cweno ) then
+      this%n_sec         = n_sec
       n_sec_cells = maxval(sec_idx(1:1+sec_idx(1)))
       allocate( this%sec_idx( n_sec ) )
-      allocate( this%coefs_sec(     p%idx(1)-1, n_vars, sec_idx(1) ) )
-      allocate( this%Ainv_sec(      p%idx(1)-1, n_sec_cells, sec_idx(1) ) )
-      allocate( this%col_scale_sec( p%idx(1)-1, sec_idx(1) ) )
+      allocate( this%coefs_sec( p%idx(1)-1, n_vars,      sec_idx(1) ) )
+      allocate( this%Ainv_sec(  p%idx(1)-1, n_sec_cells, sec_idx(1) ) )
       this%sec_idx       = sec_idx(1:n_sec)
       this%n_sec         = n_sec
       this%coefs_sec     = zero
       this%Ainv_sec      = zero
-      this%col_scale_sec = one
     else
       allocate( this%sec_idx(       0       ) )
       allocate( this%coefs_sec(     0, 0, 0 ) )
       allocate( this%Ainv_sec(      0, 0, 0 ) )
-      allocate( this%col_scale_sec( 0, 0    ) )
       this%n_sec = 0
+    end if
+
+    if ( use_tci ) then
+      ! nn = 2*p%n_dim - n_bnd ! face neighbors
+      nn = count( nbor_degree(1:n_nbor) == 1 )
+      allocate( this%TCI_mat(  nn, p%n_terms-1 ) )
+      this%TCI_mat = zero
+    else
+      allocate( this%TCI_mat( 0, 0 ) )
     end if
 
   end function constructor
 
   pure function evaluate_reconstruction( this, p, point, n_terms,              &
-                                         n_var, var_idx, lim ) result(val)
+                                         n_var, var_idx ) result(val)
     use set_constants, only : zero
-    use zero_mean_limiter_type, only : zero_mean_limit_t
     class(rec_cell_t),          intent(in) :: this
     type(monomial_basis_t),     intent(in) :: p
     real(dp), dimension(:),     intent(in) :: point
     integer,                    intent(in) :: n_terms, n_var
     integer,  dimension(n_var), intent(in) :: var_idx
-    type(zero_mean_limit_t), optional, intent(in) :: lim
     real(dp), dimension(n_var)             :: val
 
     real(dp), dimension(n_terms) :: local_basis
-    integer :: v, n, vv
+    integer :: v, n
 
     val = zero
 
     do n = 1,n_terms
       local_basis(n) = this%basis%eval_b(p,n,point)
     end do
-
-    if ( present(lim) ) then
-      do v = 1,n_var
-        if ( any(lim%var_idx==var_idx(v)) ) then
-          vv = findloc(lim%var_idx,var_idx(v),dim=1)
-          val(v) = this%coefs(1,var_idx(v)) ! cell average
-          do n = 2,n_terms
-            val(v) = val(v) + lim%alpha(vv) * this%coefs(n,var_idx(v)) * local_basis(n)
-          end do
-        else
-          val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), local_basis )
-        end if
-      end do
-    else
-      do v = 1,n_var
-        val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), local_basis )
-      end do
-    end if
+    do v = 1,n_var
+      val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), local_basis )
+    end do
   end function evaluate_reconstruction
 
     pure function evaluate_reconstruction_derivative( this, p, point, n_terms,              &
-                                         n_var, var_idx, order, lim ) result(val)
+                                         n_var, var_idx, order ) result(val)
     use set_constants, only : zero
-    use zero_mean_limiter_type, only : zero_mean_limit_t
     class(rec_cell_t),          intent(in) :: this
     type(monomial_basis_t),     intent(in) :: p
     real(dp), dimension(:),     intent(in) :: point
     integer,                    intent(in) :: n_terms, n_var
     integer,  dimension(n_var), intent(in) :: var_idx
     integer,  dimension(:),     intent(in) :: order
-    type(zero_mean_limit_t), optional, intent(in) :: lim
     real(dp), dimension(n_var)             :: val
-
     real(dp), dimension(n_terms) :: local_basis
-    integer :: v, n, vv
+    integer :: v, n
 
     val = zero
 
@@ -6218,29 +6035,12 @@ contains
       local_basis(n) = this%basis%deval_b(p,n,point,order)
     end do
 
-    if (order(1)==6) then
-      vv =2
-    end if
-
-    if ( present(lim) ) then
-      do v = 1,n_var
-        if ( any(lim%var_idx==var_idx(v)) ) then
-          vv = findloc(lim%var_idx,var_idx(v),dim=1)
-          do n = 2,n_terms
-            val(v) = val(v) + lim%alpha(vv) * this%coefs(n,var_idx(v)) * local_basis(n)
-          end do
-        else
-          val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), local_basis )
-        end if
-      end do
-    else
-      do v = 1,n_var
-        val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), local_basis )
-      end do
-    end if
+    do v = 1,n_var
+      val(v) = val(v) + dot_product( this%coefs(1:n_terms,var_idx(v)), local_basis )
+    end do
   end function evaluate_reconstruction_derivative
 
-  pure function get_cell_avg(quad,n_dim,n_var,var_idx,eval_fun) result(avg)
+  pure function get_cell_avg( quad, n_dim, n_var, var_idx, eval_fun ) result(avg)
     use set_constants, only : zero
     use quadrature_derived_type, only : quad_t
     use function_holder_type,    only : func_h_t
@@ -6258,10 +6058,9 @@ contains
     avg = quad%integrate( n_var, tmp_val ) / sum( quad%quad_wts)
   end function get_cell_avg
 
-  pure subroutine set_cell_avg_func( this, quad, n_dim, n_var,var_idx,eval_fun)
+  pure subroutine set_cell_avg_func( this, quad, n_dim, n_var, var_idx, eval_fun )
     use quadrature_derived_type, only : quad_t
     use function_holder_type,    only : func_h_t
-    use project_inputs,          only : use_cweno
     class(rec_cell_t),      intent(inout) :: this
     type(quad_t),           intent(in)    :: quad
     integer,                intent(in)    :: n_dim, n_var
@@ -6300,7 +6099,6 @@ contains
   pure function get_cell_error( this, p, quad, n_terms, norm, n_var, var_idx, eval_fun ) result(err)
     use set_constants,           only : zero, one
     use quadrature_derived_type, only : quad_t
-    use monomial_basis_derived_type, only : monomial_basis_t
     use function_holder_type,    only : func_h_t
     class(rec_cell_t),      intent(in) :: this
     type(monomial_basis_t), intent(in) :: p
@@ -6347,19 +6145,6 @@ contains
   pure function linear_weights(this,lambda_0) result(lambda)
     use set_constants, only : one
     use project_inputs, only : lambda_0_cweno
-    class(rec_cell_t),         intent(in)  :: this    
-    real(dp), optional,        intent(in)  :: lambda_0
-    real(dp), dimension(0:this%sec_idx(1)) :: lambda
-
-    lambda = one
-    lambda(0) = lambda_0_cweno
-    if (present(lambda_0)) lambda(0) = lambda_0
-    lambda = lambda / sum(lambda)
-end function linear_weights
-
-  pure function linear_weights2(this,lambda_0) result(lambda)
-    use set_constants, only : one
-    use project_inputs, only : lambda_0_cweno
     class(rec_cell_t),          intent(in) :: this
     real(dp), optional,         intent(in) :: lambda_0
     real(dp), dimension(0:this%sec_idx(1)) :: lambda
@@ -6369,7 +6154,7 @@ end function linear_weights
     if (present(lambda_0)) lambda(0) = lambda_0
     lambda(0)  = one - one/lambda(0)
     lambda(1:) = ( one - lambda(0) )/real(this%sec_idx(1),dp)
-  end function linear_weights2
+  end function linear_weights
 
   pure function modify_coefs( this, p, lin_weights ) result(coefs_s0)
     class(rec_cell_t),                            intent(in)  :: this
@@ -6411,7 +6196,7 @@ end function linear_weights
     real(dp), dimension(0:this%sec_idx(1))             :: lin_weights
     real(dp), dimension(0:this%sec_idx(1),this%n_vars) :: osc_ind
     integer :: v, s
-    lin_weights = this%linear_weights2()
+    lin_weights = this%linear_weights()
     coefs_s0    = this%modify_coefs( p, lin_weights )
     osc_ind     = this%get_oscillation_indicators( p, coefs_s0 )
     do v = 1,this%n_vars
@@ -6421,7 +6206,7 @@ end function linear_weights
   end function get_cweno_weights
 
   pure function get_cwenoz_weights( this, p ) result(weights)
-    use set_constants, only : one
+    use set_constants,  only : one
     use project_inputs, only : epsilon_cweno, r_cweno
     class(rec_cell_t),                      intent(in) :: this
     type(monomial_basis_t),                 intent(in) :: p
@@ -6431,7 +6216,7 @@ end function linear_weights
     real(dp), dimension(0:this%sec_idx(1),this%n_vars) :: osc_ind
     real(dp) :: tau
     integer :: v, s
-    lin_weights = this%linear_weights2()
+    lin_weights = this%linear_weights()
     coefs_s0    = this%modify_coefs( p, lin_weights )
     osc_ind     = this%get_oscillation_indicators( p, coefs_s0 )
     do v = 1,this%n_vars
@@ -6454,7 +6239,7 @@ end function linear_weights
     real(dp), dimension(0:this%sec_idx(1),this%n_vars) :: osc_ind
     real(dp) :: tau
     integer :: v, s
-    lin_weights = this%linear_weights2()
+    lin_weights = this%linear_weights()
     coefs_s0    = this%modify_coefs( p, lin_weights )
     osc_ind     = this%get_oscillation_indicators( p, coefs_s0 )
     do v = 1,this%n_vars
@@ -6481,17 +6266,6 @@ end function linear_weights
       avg = sum( vals ) / real(n_vals,dp)
       mu(v)  = sum( abs(vals - avg )) / real(n_vals,dp) + epsilon
     end do
-
-    !     pure function descaler(vals_) result(mu)
-  !       real(dp), dimension(:), intent(in) :: vals_
-  !       real(dp)                           :: mu
-  !       real(dp) :: avg
-  !       real(dp), parameter :: epsilon = 1.0e-40_dp
-  !       integer :: n_vals
-  !       n_vals = size(vals_)
-  !       avg = sum( vals_ ) / real(n_vals,dp)
-  !       mu  = sum( abs(vals_ - avg )) / real(n_vals,dp) + epsilon
-  !     end function descaler
   end function get_mu
 
   pure subroutine apply_cweno( this, p, weights )
@@ -6500,7 +6274,7 @@ end function linear_weights
     real(dp), dimension(0:this%sec_idx(1),this%n_vars), intent(in) :: weights
     real(dp), dimension(p%n_terms-1,this%n_vars) :: coefs_s0
     integer :: v, s
-    coefs_s0 = this%modify_coefs( p, this%linear_weights2() )
+    coefs_s0 = this%modify_coefs( p, this%linear_weights() )
     do v = 1,this%n_vars
       this%coefs(2:,v) = weights(0,v) * coefs_s0(:,v)
       do s = 1,this%sec_idx(1)
@@ -6508,176 +6282,14 @@ end function linear_weights
       end do
     end do
   end subroutine apply_cweno
-    
-
-  pure subroutine get_nonlinear_weights(this,p,term_start,term_end,n_var,var_idx,weights,coefs_out)
-    use set_constants, only : zero, one
-    use project_inputs, only : epsilon_cweno, r_cweno
-    class(rec_cell_t),                            intent(in)  :: this
-    type(monomial_basis_t),                       intent(in)  :: p
-    integer,                                      intent(in)  :: term_start
-    integer,                                      intent(in)  :: term_end
-    integer,                                      intent(in)  :: n_var
-    integer,  dimension(:),                       intent(in)  :: var_idx
-    real(dp), dimension(0:this%sec_idx(1),n_var), intent(out) :: weights
-    real(dp), dimension(term_end,n_var), optional,intent(out) :: coefs_out
-    real(dp), dimension(0:this%sec_idx(1)) :: lambda
-    real(dp), dimension(term_end-1,n_var) :: coefs_s0
-    real(dp), dimension(p%idx(1)-1,n_var,this%sec_idx(1)) :: coefs_s
-    integer :: n_sec, lin_terms
-    integer :: v, s
-
-    ! call linear_weights(this,lambda)
-    lambda = this%linear_weights()
-    n_sec     = this%sec_idx(1)
-    lin_terms = p%idx(1)
-    coefs_s  = zero
-    coefs_s0 = zero
-    do v = 1,n_var
-      coefs_s0(:,v) = this%coefs(2:,var_idx(v)) / lambda(0)
-      do s = 1,n_sec
-        coefs_s(:,v,s) = this%coefs_sec(:,var_idx(v),s)
-        coefs_s0(1:lin_terms-1,v) = coefs_s0(1:lin_terms-1,v) - lambda(s)/lambda(0) * coefs_s(:,v,s)
-      end do
-      weights(0,v) = lambda(0)/( sum(coefs_s0(:,v)**2) + epsilon_cweno)**r_cweno
-      do s = 1,n_sec
-        weights(s,v) = lambda(s)/( sum(coefs_s(:,v,s)**2) + epsilon_cweno)**r_cweno
-      end do
-      weights(:,v) = weights(:,v)/sum( weights(:,v) )
-    end do
-
-    if ( present(coefs_out) ) then
-      coefs_out = zero
-      do v = 1,n_var
-        coefs_out(1,v) = this%coefs(1,var_idx(v))
-        do s = 1,n_sec
-          coefs_out(2:lin_terms,v) = coefs_out(2:lin_terms,v) + weights(s,v) * coefs_s(:,v,s)
-        end do
-        coefs_out(2:,v) = coefs_out(2:,v) + weights(0,v) * coefs_s0(:,v)
-      end do
-    end if
-
-  end subroutine get_nonlinear_weights
-
-  pure subroutine get_nonlinear_weights_z(this,p,term_start,term_end,n_var,var_idx,weights,coefs_out)
-    use set_constants, only : zero, one
-    use monomial_basis_derived_type,  only : monomial_basis_t
-    use project_inputs, only : epsilon_cweno, r_cweno
-    class(rec_cell_t),                            intent(in)  :: this
-    type(monomial_basis_t),                       intent(in)  :: p
-    integer,                                      intent(in)  :: term_start
-    integer,                                      intent(in)  :: term_end
-    integer,                                      intent(in)  :: n_var
-    integer,  dimension(:),                       intent(in)  :: var_idx
-    real(dp), dimension(0:this%sec_idx(1),n_var), intent(out) :: weights
-    real(dp), dimension(term_end,n_var), optional,intent(out) :: coefs_out
-    real(dp), dimension(0:this%sec_idx(1)) :: lambda
-    real(dp), dimension(0:this%sec_idx(1),n_var) :: osc
-    real(dp), dimension(term_end-1,n_var) :: coefs_s0
-    real(dp), dimension(p%idx(1)-1,n_var,this%sec_idx(1)) :: coefs_s
-    integer :: n_sec, lin_terms
-    integer :: v, s
-    real(dp) :: tau
-
-    ! call linear_weights(this,lambda)
-    ! call linear_weights2(this,lambda)
-    lambda = this%linear_weights2()
-    n_sec     = this%sec_idx(1)
-    lin_terms = p%idx(1)
-    coefs_s  = zero
-    coefs_s0 = zero
-    do v = 1,n_var
-      coefs_s0(:,v) = this%coefs(2:,var_idx(v)) / lambda(0)
-      do s = 1,n_sec
-        coefs_s(:,v,s) = this%coefs_sec(:,var_idx(v),s)
-        coefs_s0(1:lin_terms-1,v) = coefs_s0(1:lin_terms-1,v) - lambda(s)/lambda(0) * coefs_s(:,v,s)
-      end do
-      osc(0,v) = sum(coefs_s0(:,v)**2)
-      do s = 1,n_sec
-        osc(s,v) = sum(coefs_s(:,v,s)**2)
-      end do
-    end do
-
-    do v = 1,n_var
-      ! tau = abs( real(n_sec,dp) * osc(0,v) - sum(osc(1:,v)) )
-      tau = sum( abs( osc(0,v) - osc(1:,v) ) )/real(n_sec,dp)
-      do s = 0,n_sec
-        weights(s,v) = lambda(s) * ( one + ( tau/( osc(s,v) + epsilon_cweno) )**r_cweno )
-      end do
-      ! tau = ( sum( abs( osc(0,v) - osc(1:,v) ) )/real(n_sec,dp) )**r_cweno
-      ! do s = 0,n_sec
-      !   weights(s,v) = lambda(s) * ( one + tau/( osc(s,v) + epsilon_cweno) )
-      ! end do
-      weights(:,v) = weights(:,v)/sum( weights(:,v) )
-    end do
-
-    if ( present(coefs_out) ) then
-      coefs_out = zero
-      do v = 1,n_var
-        coefs_out(1,v) = this%coefs(1,var_idx(v))
-        do s = 1,n_sec
-          coefs_out(2:lin_terms,v) = coefs_out(2:lin_terms,v) + weights(s,v) * coefs_s(:,v,s)
-        end do
-        coefs_out(2:,v) = coefs_out(2:,v) + weights(0,v) * coefs_s0(:,v)
-      end do
-    end if
-
-  end subroutine get_nonlinear_weights_z  
-
-  pure function get_nbor_osc_indicator(this,nbor,p,term_start,term_end,n_var,var_idx) result(osc)
-    use set_constants, only : zero, one
-    class(rec_cell_t),                            intent(in)  :: this, nbor
-    type(monomial_basis_t),                       intent(in)  :: p
-    integer,                                      intent(in)  :: term_start
-    integer,                                      intent(in)  :: term_end
-    integer,                                      intent(in)  :: n_var
-    integer,  dimension(:),                       intent(in)  :: var_idx
-    real(dp), dimension(n_var)                                :: osc
-    real(dp), dimension(term_end,n_var) :: nbor_coefs
-    integer :: v
-    nbor_coefs = this%basis%shift_coefs_from_nbor(nbor%basis,p,nbor%coefs,term_end,n_var,var_idx)
-    do v = 1,n_var
-      osc(v) = sum( nbor_coefs(2:,v)**2 )
-    end do
-  end function get_nbor_osc_indicator
-
-  pure function get_self_osc_indicator(this,p,term_start,term_end,n_var,var_idx) result(osc)
-    use set_constants, only : zero, one
-    class(rec_cell_t),                            intent(in)  :: this
-    type(monomial_basis_t),                       intent(in)  :: p
-    integer,                                      intent(in)  :: term_start
-    integer,                                      intent(in)  :: term_end
-    integer,                                      intent(in)  :: n_var
-    integer,  dimension(:),                       intent(in)  :: var_idx
-    real(dp), dimension(n_var)                                :: osc
-    integer :: v
-    do v = 1,n_var
-      osc(v) = sum( this%coefs(2:,var_idx(v))**2 )
-    end do
-  end function get_self_osc_indicator
 
   pure subroutine cweno(this,p,mu)
-    use set_constants, only : zero, one
-    use monomial_basis_derived_type,  only : monomial_basis_t
-    use project_inputs,               only : use_cwenoz
-    class(rec_cell_t),                            intent(inout)  :: this
-    type(monomial_basis_t),                       intent(in)  :: p
+    use set_constants,  only : zero, one
+    use project_inputs, only : use_cwenoz
+    class(rec_cell_t),                          intent(inout)  :: this
+    type(monomial_basis_t),                     intent(in)  :: p
     real(dp), dimension(this%n_vars), optional, intent(in) :: mu
     real(dp), dimension(0:this%sec_idx(1),this%n_vars) ::weights
-    real(dp), dimension(size(this%coefs,1),size(this%coefs,2)) :: coefs_out
-    integer, dimension(this%n_vars) :: var_idx
-    integer :: term_end, term_start, n_var
-    integer :: i
-    term_start = 1
-    term_end   = p%n_terms
-    n_var      = this%n_vars
-    var_idx    = [(i,i=1,n_var)]
-    ! if ( use_cwenoz ) then
-    !   call this%get_nonlinear_weights_z(p,term_start,term_end,n_var,var_idx,weights,coefs_out=coefs_out)
-    ! else
-    !   call this%get_nonlinear_weights(p,term_start,term_end,n_var,var_idx,weights,coefs_out=coefs_out)
-    ! end if
-    ! this%coefs = coefs_out
 
     if ( use_cwenoz ) then
       if ( present(mu) ) then
@@ -6691,6 +6303,27 @@ end function linear_weights
     call this%apply_cweno(p,weights)
 
   end subroutine cweno
+
+  pure function troubled_cell_indicator( this, n_var, var_idx, RHS ) result(val)
+    use set_constants, only : near_zero
+    class(rec_cell_t),                      intent(in) :: this
+    integer,                                intent(in) :: n_var
+    integer,  dimension(n_var),             intent(in) :: var_idx
+    real(dp), dimension(this%n_nbor,n_var), intent(in) :: RHS
+    real(dp), dimension(n_var)                         :: val
+    real(dp), dimension(size(this%TCI_mat,1),n_var) :: delta, RHS2
+    real(dp) :: avg, nbor_avg_max, den
+    integer :: j, v
+
+    RHS2 = RHS( pack([(j,j=1,this%n_nbor)],this%nbor_degree == 1), var_idx )
+    delta = matmul( this%TCI_mat, this%coefs(2:,var_idx) ) - RHS2
+    do v = 1,n_var
+      avg          = this%coefs( 1, var_idx(v) )
+      nbor_avg_max = maxval( abs( RHS2(:,v) + avg ) )
+      den          = max( abs(avg), nbor_avg_max ) + near_zero
+      val(v) = sum( abs( delta(:,v) ) ) / den
+    end do
+  end function troubled_cell_indicator
   
 end module reconstruct_cell_derived_type
 
@@ -6723,7 +6356,7 @@ module rec_block_derived_type
     procedure,         pass :: get_cell_LHS, get_cell_RHS
     procedure, public, pass :: get_nbor_min_max
     procedure,         pass :: get_cell_LHS_sec, get_cell_RHS_sec
-    procedure,         pass :: determine_maximum_degree
+    procedure,         pass :: determine_maximum_degree, get_nbor_delta_quad
   end type rec_block_t
 
   interface rec_block_t
@@ -6809,16 +6442,14 @@ contains
     deallocate( nbor_block, nbor_idx )
   end function constructor
 
-  pure function evaluate_block_rec( this, cell_idx, x, vars, n_terms, order, lim ) result(val)
+  pure function evaluate_block_rec( this, cell_idx, x, vars, n_terms, order ) result(val)
     use index_conversion, only : local2global
-    use zero_mean_limiter_type, only : zero_mean_limit_t
     class(rec_block_t),     intent(in) :: this
     integer,  dimension(:), intent(in) :: cell_idx
     real(dp), dimension(:), intent(in) :: x
     integer,  dimension(:), intent(in) :: vars
     integer,  optional,     intent(in) :: n_terms
     integer,  dimension(:), optional,  intent(in) :: order
-    type(zero_mean_limit_t), optional, intent(in) :: lim
     real(dp), dimension(size(vars))    :: val
     integer :: n_terms_, n_vars, lin_idx
 
@@ -6828,13 +6459,13 @@ contains
     if ( present(n_terms) ) n_terms_ = max(min(n_terms_,n_terms),1)
 
     if ( present(order) ) then
-      val = this%cells(lin_idx)%deval_c( this%p, x, n_terms_, n_vars, vars, order, lim=lim )
+      val = this%cells(lin_idx)%deval_c( this%p, x, n_terms_, n_vars, vars, order )
     else
-      val = this%cells(lin_idx)%eval_c( this%p, x, n_terms_, n_vars, vars, lim=lim )
+      val = this%cells(lin_idx)%eval_c( this%p, x, n_terms_, n_vars, vars )
     end if
   end function evaluate_block_rec
 
-  pure subroutine set_cell_avgs_fun(this,gblock,n_var,var_idx,eval_fun)
+  pure subroutine set_cell_avgs_fun( this, gblock, n_var, var_idx, eval_fun )
     use grid_derived_type,       only : grid_block
     use index_conversion,        only : global2local
     use function_holder_type,    only : func_h_t
@@ -6883,17 +6514,15 @@ contains
   end function get_cell_h_ref
 
   pure function get_cell_error( this, quad, lin_idx, n_terms, norm,            &
-                                n_var, var_idx, eval_fun, lim ) result(err)
+                                n_var, var_idx, eval_fun ) result(err)
     use set_constants,           only : zero, one
     use quadrature_derived_type, only : quad_t
     use function_holder_type,    only : func_h_t
-    use zero_mean_limiter_type,  only : zero_mean_limit_t
     class(rec_block_t),     intent(in) :: this
     type(quad_t),           intent(in) :: quad
     integer,                intent(in) :: lin_idx, n_terms, norm, n_var
     integer, dimension(:),  intent(in) :: var_idx
     class(func_h_t),        intent(in) :: eval_fun
-    type(zero_mean_limit_t), optional, intent(in) :: lim
     real(dp), dimension(n_var)                    :: err
     real(dp), dimension(n_var) :: reconstructed, exact
     real(dp), dimension(n_var,quad%n_quad) :: tmp_val
@@ -6903,7 +6532,7 @@ contains
     do n = 1,quad%n_quad
       exact = eval_fun%test_eval( this%p%n_dim, n_var, quad%quad_pts(:,n) )
       reconstructed = this%cells(lin_idx)%eval_c( this%p, quad%quad_pts(:,n),    &
-                                                n_terms, n_var, var_idx, lim=lim )
+                                                n_terms, n_var, var_idx )
       tmp_val(:,n) = abs( reconstructed - exact )
     end do
     if (norm>max_L_norm) then
@@ -6916,18 +6545,16 @@ contains
   end function get_cell_error
 
   pure function get_cell_derivative_error( this, quad, lin_idx, n_terms, norm,            &
-                                           n_var, var_idx, eval_fun, order, lim ) result(err)
+                                           n_var, var_idx, eval_fun, order ) result(err)
     use set_constants,           only : zero, one
     use quadrature_derived_type, only : quad_t
     use function_holder_type,    only : func_h_t
-    use zero_mean_limiter_type,  only : zero_mean_limit_t
     class(rec_block_t),     intent(in) :: this
     type(quad_t),           intent(in) :: quad
     integer,                intent(in) :: lin_idx, n_terms, norm, n_var
     integer, dimension(:),  intent(in) :: var_idx
     class(func_h_t),        intent(in) :: eval_fun
     integer, dimension(this%n_dim), intent(in) :: order
-    type(zero_mean_limit_t), optional, intent(in) :: lim
     real(dp), dimension(n_var)                    :: err
     real(dp), dimension(n_var) :: reconstructed, exact
     real(dp), dimension(n_var,quad%n_quad) :: tmp_val
@@ -6937,7 +6564,7 @@ contains
     do n = 1,quad%n_quad
       exact = eval_fun%dx_eval( quad%quad_pts(:,n), order=order)
       reconstructed = this%cells(lin_idx)%deval_c( this%p, quad%quad_pts(:,n),    &
-                                                n_terms, n_var, var_idx, order, lim=lim )
+                                                n_terms, n_var, var_idx, order )
       tmp_val(:,n) = abs( reconstructed - exact )
     end do
     if (norm>max_L_norm) then
@@ -6950,54 +6577,53 @@ contains
 
   subroutine init_cell( this, LHS, lin_idx, term_end )
     use math,              only : compute_pseudo_inverse
-    use project_inputs,    only : column_scaling, use_cweno
+    use project_inputs,    only : column_scaling, use_cweno, use_tci
     class(rec_block_t),       intent(inout) :: this
     real(dp), dimension(:,:), intent(inout) :: LHS
     integer,                  intent(in)    :: lin_idx
     integer,                  intent(in)    :: term_end
+    real(dp), dimension(term_end-1) :: col_scale
     integer :: i, j, n, m
     integer :: k, n_nnbor
     i = lin_idx
-    m = this%cells(i)%n_nbor
-    n = this%p%n_terms
     if ( column_scaling ) then
-      call this%get_cell_LHS( i, term_end, m, n, LHS, col_scale=this%cells(i)%col_scale(1:term_end-1) )
+      ! call this%get_cell_LHS( i, term_end, m, n, LHS, col_scale=this%cells(i)%col_scale(1:term_end-1) )
+      call this%get_cell_LHS( i, term_end, m, n, LHS, col_scale=col_scale )
     else
       call this%get_cell_LHS( i, term_end, m, n, LHS )
     end if
-    
-    this%cells(i)%LHS = LHS(1:m,1:n)
+
+    if ( use_tci ) then
+      ! n_nnbor = 2*this%p%n_dim - this%cells(i)%n_bnd
+      ! idx = [(j,j=1,this%cells(i)%n_nbor)]
+      n_nnbor = count( this%cells(i)%nbor_degree == 1 )
+      ! this%cells(i)%TCI_mat = LHS(1:n_nnbor,1:n)
+      this%cells(i)%TCI_mat = LHS( pack([(j,j=1,this%cells(i)%n_nbor)],this%cells(i)%nbor_degree == 1), 1:n )
+      do j = 1,n_nnbor
+        this%cells(i)%TCI_mat(j,:) = this%cells(i)%TCI_mat(j,:) / col_scale
+      end do
+    end if
 
     call compute_pseudo_inverse( m, n, LHS(1:m,1:n), this%cells(i)%Ainv(1:n,1:m) )
-
-    
-    do j = 1,this%cells(i)%n_nbor
-      do k = 1,this%cells(i)%n_nbor
-        this%cells(i)%M1(j,k)  = -dot_product( this%cells(i)%LHS(j,:), this%cells(i)%col_scale * this%cells(i)%Ainv(:,k) )
+    if ( column_scaling ) then
+      do j = 1,m
+        ! this%cells(i)%Ainv(:,j) = this%cells(i)%col_scale * this%cells(i)%Ainv(:,j)
+        this%cells(i)%Ainv(:,j) = col_scale * this%cells(i)%Ainv(:,j)
       end do
-      this%cells(i)%M1(j,j)  = this%cells(i)%M1(j,j) + 1
-    end do
-
-    n_nnbor = 2*this%n_dim-this%cells(i)%n_bnd
-    do j = 1,n_nnbor
-      do k = 1,n_nnbor
-        this%cells(i)%M(j,k) = -dot_product( this%cells(i)%LHS(j,:), this%cells(i)%col_scale * this%cells(i)%Ainv(:,k) )
-      end do
-      this%cells(i)%M(j,j)  = this%cells(i)%M(j,j) + 1
-    end do
-
+    end if
 
     if ( use_cweno ) then
-      n = this%p%idx(1)-1
       if ( column_scaling ) then
         do j = 1,this%cells(i)%sec_idx(1)
-          m = this%cells(i)%sec_idx(1+j)
-          call this%get_cell_LHS_sec(i,j,m,n,LHS,col_scale=this%cells(i)%col_scale_sec(1:n,j))
+          n = this%p%idx(1)-1
+          call this%get_cell_LHS_sec(i,j,m,n,LHS,col_scale=col_scale(1:n))
           call compute_pseudo_inverse( m, n, LHS(1:m,1:n), this%cells(i)%Ainv_sec(1:n,1:m,j) )
+          do k = 1,m
+            this%cells(i)%Ainv_sec(1:n,k,j) = col_scale(1:n) * this%cells(i)%Ainv_sec(1:n,k,j)
+          end do
         end do
       else
         do j = 1,this%cells(i)%sec_idx(1)
-          m = this%cells(i)%sec_idx(1+j)
           call this%get_cell_LHS_sec(i,j,m,n,LHS)
           call compute_pseudo_inverse( m, n, LHS(1:m,1:n), this%cells(i)%Ainv_sec(1:n,1:m,j) )
         end do
@@ -7174,9 +6800,10 @@ contains
     n_nbors = this%cells(i)%n_nbor
     do k = 1,n_nbors
       j = this%cells(i)%nbor_idx(k)
-      do v = 1,n_vars
-        RHS(k,var_idx(v)) = this%cells(j)%coefs(1,var_idx(v)) - this%cells(i)%coefs(1,var_idx(v))
-      end do
+      ! do v = 1,n_vars
+      !   RHS(k,var_idx(v)) = this%cells(j)%coefs(1,var_idx(v)) - this%cells(i)%coefs(1,var_idx(v))
+      ! end do
+      RHS(k,var_idx) = this%cells(j)%coefs(1,var_idx) - this%cells(i)%coefs(1,var_idx)
     end do
   end subroutine get_cell_RHS
 
@@ -7214,117 +6841,57 @@ contains
     n_nbors = this%cells(i)%sec_idx(1+s)
     do k = 1,n_nbors
       j = this%cells(i)%nbor_idx( this%cells(i)%get_sector_stencil_idx(s,k) )
-      do v = 1,n_vars
-        RHS(k,var_idx(v)) = this%cells(j)%coefs(1,var_idx(v)) - this%cells(i)%coefs(1,var_idx(v))
-      end do
+      ! do v = 1,n_vars
+      !   RHS(k,var_idx(v)) = this%cells(j)%coefs(1,var_idx(v)) - this%cells(i)%coefs(1,var_idx(v))
+      ! end do
+      RHS(k,var_idx) = this%cells(j)%coefs(1,var_idx) - this%cells(i)%coefs(1,var_idx)
     end do
   end subroutine get_cell_RHS_sec
 
-  pure subroutine compare_reconstructions(this,lin_idx,term_end,n_var,var_idx)
-    class(rec_block_t),     intent(in) :: this
-    integer,                intent(in) :: lin_idx, term_end, n_var
-    integer, dimension(:),  intent(in) :: var_idx
-    real(dp), dimension(term_end,n_var) :: tcoefs1, tcoefs2
-    integer :: i, j, k, n_nbors, tmp_var
-    i = lin_idx
-    tcoefs1 = this%cells(i)%coefs
-    n_nbors = this%cells(i)%n_nbor
-    do k = 1,n_nbors
-      j = this%cells(i)%nbor_idx(k)
-      tcoefs2 = this%cells(i)%basis%shift_coefs_from_nbor( this%cells(j)%basis,this%p,this%cells(j)%coefs,term_end,n_var,var_idx)
-      tmp_var = 1
-    end do
-  end subroutine compare_reconstructions
-
   pure subroutine solve_cell( this, lin_idx, term_end, n_var, var_idx )
     use set_constants, only : zero, near_zero
-    use project_inputs, only : column_scaling, use_cweno
+    use project_inputs, only : use_cweno, use_tci
     use grid_local,     only : grid
     use index_conversion, only : global2local
     class(rec_block_t), intent(inout) :: this
     integer,                intent(in)    :: lin_idx, term_end, n_var
     integer, dimension(:),  intent(in)    :: var_idx
     real(dp), dimension(:,:), allocatable :: RHS, nbor_avg, nbor_delta0, nbor_delta1, nbor_delta2
-    real(dp), dimension(n_var) :: T1, T2
+    real(dp), dimension(n_var) :: T
     real(dp), dimension(this%n_vars) :: mu
-    integer :: i, n, n_nbors, v, s, n_nnbor, j, k
-    integer, dimension(3) :: idx
+    integer :: i, s, v, n_nbors
+    logical :: troubled
     i = lin_idx
     allocate( RHS(this%cells(i)%n_nbor,n_var) )
     call this%get_cell_RHS(i,n_var,var_idx,n_nbors,RHS)
-    if ( column_scaling ) then
-      do v = 1,n_var
-        do n = 2,term_end
-          this%cells(i)%coefs(n,var_idx(v)) = this%cells(i)%col_scale(n-1)*dot_product( this%cells(i)%Ainv(n-1,:),RHS(1:n_nbors,v) )
-        end do
-      end do
-    else
-      do v = 1,n_var
-        do n = 2,term_end
-          this%cells(i)%coefs(n,var_idx(v)) = dot_product( this%cells(i)%Ainv(n-1,:),RHS(1:n_nbors,v) )
-        end do
-      end do
+    this%cells(i)%coefs(2:,var_idx) = matmul( this%cells(i)%Ainv,RHS(1:n_nbors,:) )    
+    ! real(dp), dimension(:,:), allocatable :: nbor_delta0
+    ! integer :: n_nnbor
+    ! allocate( nbor_delta0(this%cells(i)%n_nbor,n_var) )
+    ! n_nnbor = 2*this%n_dim - this%cells(i)%n_bnd
+    ! n_nnbor = count( this%cells(i)%nbor_degree == 1 )
+    ! call this%get_nbor_delta_quad(this,lin_idx,term_end,n_var,var_idx,nbor_delta0)
+    ! do v = 1,n_var
+    !   T1(v) = sum(abs(nbor_delta0(1:n_nnbor,v))) / ( maxval( abs( RHS(1:n_nnbor,v) + this%cells(i)%coefs( 1, var_idx(v) ) ) ) + near_zero )
+    ! end do
+    ! deallocate( nbor_delta0 )
+    ! troubled = any( T1 > 0.0015_dp*2.0_dp**(this%n_dim - 1) )
+    troubled = .true.
+    if ( use_tci ) then
+      T = this%cells(i)%troubled_cell_indicator(n_var,var_idx,RHS)
+      ! troubled = any( T > 0.0015_dp*2.0_dp**(this%n_dim - 1) )
+      troubled = any( T > ( 0.0015_dp/real(this%n_dim,dp)) * 2.0_dp**(this%p%total_degree - 1) )
     end if
 
-    n_nnbor = 2*this%n_dim - this%cells(i)%n_bnd
-
-    allocate( nbor_avg(   this%cells(i)%n_nbor,n_var) )
-    allocate( nbor_delta0(this%cells(i)%n_nbor,n_var) )
-    allocate( nbor_delta1(this%cells(i)%n_nbor,n_var) )
-    allocate( nbor_delta2(             n_nnbor,n_var) )
-    
-
-    do v = 1,n_var
-      nbor_avg(:,v) = RHS(:,v) + this%cells(i)%coefs( 1, var_idx(v) )
-    end do
-
-    call get_nbor_delta_quad(this,lin_idx,term_end,n_var,var_idx,nbor_delta0)
-    do v = 1,n_var
-      nbor_delta1(:,v) = matmul( this%cells(i)%LHS,  this%cells(i)%coefs(2:,var_idx(v)) / this%cells(i)%col_scale ) + this%cells(i)%coefs( 1, var_idx(v) )
-      nbor_delta1(:,v) = nbor_delta1(:,v) - nbor_avg(:,v)
-      nbor_delta2(:,v) = matmul( this%cells(i)%LHS(1:n_nnbor,:), this%cells(i)%coefs(2:,var_idx(v)) / this%cells(i)%col_scale ) + this%cells(i)%coefs( 1, var_idx(v) )
-      nbor_delta2(:,v) = nbor_delta2(:,v) - nbor_avg(1:n_nnbor,v)
-      T1(v) = sum(abs(nbor_delta0(1:n_nnbor,v))) / ( maxval( abs( RHS(1:n_nnbor,v) + this%cells(i)%coefs( 1, var_idx(v) ) ) ) + near_zero )
-      ! T2(v) = sum(abs(nbor_delta1(1:n_nnbor,v))) / ( maxval( abs( RHS(1:n_nnbor,v) + this%cells(i)%coefs( 1, var_idx(v) ) ) ) + near_zero )
-      T2(v) = sum(abs(nbor_delta1(:,v))) / ( maxval( abs( RHS(:,v) + this%cells(i)%coefs( 1, var_idx(v) ) ) ) + near_zero )
-    end do
-    
-
-
-    ! if (use_cweno) then
-    !   idx = 1
-    !   idx(1:this%n_dim) = global2local(i,this%n_cells)
-    !   call this%cells(i)%get_nonlinear_weights_alt(this%p,grid%gblock(1)%grid_vars%quad(idx(1),idx(2),idx(3)))
-    ! end if
-    if (use_cweno .and. any(T1>0.0015_dp*2.0_dp**(this%n_dim - 1)) ) then
-    ! if (use_cweno) then
-      if ( column_scaling ) then
-        do s = 1,this%cells(i)%sec_idx(1)
-          call this%get_cell_RHS_sec(i,s,n_var,var_idx,n_nbors,RHS)
-          do v = 1,n_var
-            do n = 1,this%p%idx(1)-1
-              this%cells(i)%coefs_sec(n,var_idx(v),s) = this%cells(i)%col_scale_sec(n,s)*dot_product( this%cells(i)%Ainv_sec(n,1:n_nbors,s),RHS(1:n_nbors,v) )
-            end do
-          end do 
-        end do
-      else
-        do s = 1,this%cells(i)%sec_idx(1)
-          call this%get_cell_RHS_sec(i,s,n_var,var_idx,n_nbors,RHS)
-          do v = 1,n_var
-            do n = 1,this%p%idx(1)-1
-              this%cells(i)%coefs_sec(n,var_idx(v),s) = dot_product( this%cells(i)%Ainv_sec(n,1:n_nbors,s),RHS(1:n_nbors,v) )
-            end do
-          end do 
-        end do
-      end if
-      ! call this%cells(i)%cweno(this%p)
+    if ( troubled .and. use_cweno ) then
+      do s = 1,this%cells(i)%sec_idx(1)
+        call this%get_cell_RHS_sec( i, s, n_var, var_idx, n_nbors, RHS )
+        this%cells(i)%coefs_sec(:,var_idx,s) = matmul( this%cells(i)%Ainv_sec(:,1:n_nbors,s),RHS(1:n_nbors,:) )
+      end do
       call this%cells(i)%cweno(this%p,mu=this%cells(i)%get_mu(RHS))
-
     end if
 
     deallocate( RHS )
-
-    deallocate( nbor_avg, nbor_delta0, nbor_delta1, nbor_delta2 )
   end subroutine solve_cell
 
   pure subroutine get_nbor_delta_quad(this,lin_idx,term_end,n_var,var_idx,nbor_delta)
@@ -7365,217 +6932,13 @@ contains
     do i = 1,this%n_cells_total
       call this%solve_cell( i, term_end, n_var, var_idx )
     end do
-    do i = 1,this%n_cells_total
-      call compare_reconstructions(this,i,term_end,n_var,var_idx)
-    end do
-    
   end subroutine solve_block
 
 end module rec_block_derived_type
 
-
-
-module limiter_block_type
-  use zero_mean_limiter_type,       only : zero_mean_limit_t
-  use zero_mean_basis_derived_type, only : zero_mean_basis_t
-  use monomial_basis_derived_type,  only : monomial_basis_t
-  use rec_block_derived_type,       only : rec_block_t
-  implicit none
-  private
-  public :: limiter_block_t
-
-  type limiter_block_t
-    integer :: n_cells_total
-    type(zero_mean_limit_t), dimension(:), allocatable :: lim
-  contains
-    private
-    procedure, public, pass :: destroy => destroy_limiter_block
-    procedure, public, pass :: update  => update_limiter_block
-  end type limiter_block_t
-
-  interface limiter_block_t
-    module procedure constructor
-  end interface limiter_block_t
-contains
-  pure elemental subroutine destroy_limiter_block( this )
-    class(limiter_block_t), intent(inout) :: this
-    if (allocated( this%lim) ) then
-      call this%lim%destroy()
-      deallocate( this%lim )
-    end if
-    this%n_cells_total = 0
-  end subroutine destroy_limiter_block
-
-  pure function constructor(rec_block,var_idx) result(this)
-    type(rec_block_t),     intent(in) :: rec_block
-    integer, dimension(:), intent(in) :: var_idx
-    type(limiter_block_t)             :: this
-    integer :: i
-    associate( n_cells_total => rec_block%n_cells_total, &
-               degree        => rec_block%degree )
-      this%n_cells_total = n_cells_total
-      allocate( this%lim(n_cells_total) )
-      do i = 1,n_cells_total
-        this%lim(i) = zero_mean_limit_t( var_idx )
-      end do
-    end associate
-  end function constructor
-
-  pure subroutine update_limiter_block( this, rblock, gblock )
-    use set_precision,     only : dp
-    use set_constants,     only : one, large, near_zero
-    use index_conversion,  only : global2local
-    use stencil_indexing,  only : get_all_interior_vertex_nbors
-    use grid_derived_type, only : grid_block, pack_cell_node_coords
-    class(limiter_block_t), intent(inout) :: this
-    type(rec_block_t),      intent(in)    :: rblock
-    type(grid_block),       intent(in)    :: gblock
-    integer :: i, n, j, v, d, status
-    integer, dimension(3) :: idx
-    integer, dimension(:,:), allocatable :: debug_nbor_idx
-    integer, dimension(6) :: face_nbors
-    integer, dimension(3**rblock%p%n_dim-1) :: vertex_nbors
-    integer :: n_face_nbors, n_cell_nodes, n_vertex_nbors
-    real(dp), dimension(3,product(rblock%n_skip+1)) :: nodes
-
-    n_cell_nodes = product(rblock%n_skip+1)
-
-    do i = 1,this%n_cells_total
-      call rblock%get_nbor_min_max(i,rblock%n_vars,[(n,n=1,rblock%n_vars)], this%lim(i)%v_min, this%lim(i)%v_max )
-    end do
-
-    do i = 1,this%n_cells_total
-      idx = global2local(i,gblock%n_cells)
-      nodes = pack_cell_node_coords( global2local(i,gblock%n_cells), [1,1,1], gblock%n_nodes, rblock%n_skip, gblock%node_coords )
-
-      ! special treatment for boundaries
-      if ( rblock%cells(i)%n_bnd > 0 ) then
-        do n = 1,n_cell_nodes
-          call this%lim(i)%update_min_max_point(rblock%p,rblock%cells(i)%basis,rblock%cells(i)%coefs,nodes(:,n))
-        end do
-        ! do n = 1,rblock%cells(i)%n_bnd
-          ! need face to vertex mapping
-          ! loop over appropriate vertices
-        ! end do
-      end if
-
-      ! update limiter values
-      do n = 1,n_cell_nodes
-        call this%lim(i)%update_limiter(rblock%p,rblock%cells(i)%basis,nodes(:,n),rblock%cells(i)%coefs)
-      end do
-    end do
-    
-    n_cell_nodes = product(rblock%n_skip+1)
-
-    ! ! first get the min-max values for coefficients
-    ! if (use_vertex_nbors) then
-    !   do i = 1,this%n_cells_total
-    !     this%lim(i)%v_max = -large
-    !     this%lim(i)%v_min =  large
-    !     this%lim(i)%alpha = one
-    !     call this%lim(i)%update_min_max(rblock%p,rblock%cells(i)%basis,rblock%cells(i)%coefs)
-    !     face_nbors = 0
-    !     n_face_nbors = count( rblock%cells(i)%nbor_degree==1 )
-    !     face_nbors(1:n_face_nbors) = pack( rblock%cells(i)%nbor_idx, rblock%cells(i)%nbor_degree==1 )
-
-    !     call get_all_interior_vertex_nbors(rblock%p%n_dim,i,rblock%n_cells,n_vertex_nbors,vertex_nbors,status)
-    !     do n = 1,n_vertex_nbors
-    !       j = vertex_nbors(n)
-    !       call this%lim(i)%update_min_max(rblock%p,rblock%cells(j)%basis,rblock%cells(j)%coefs)
-    !     end do
-    !   end do
-    ! else
-    !   do i = 1,this%n_cells_total
-    !     this%lim(i)%v_max = -large
-    !     this%lim(i)%v_min =  large
-    !     this%lim(i)%alpha = one
-    !     call this%lim(i)%update_min_max(rblock%p,rblock%cells(i)%basis,rblock%cells(i)%coefs)
-    !     face_nbors = 0
-    !     n_face_nbors = count( rblock%cells(i)%nbor_degree==1 )
-    !     face_nbors(1:n_face_nbors) = pack( rblock%cells(i)%nbor_idx, rblock%cells(i)%nbor_degree==1 )
-    !     do n = 1,n_face_nbors
-    !       j = face_nbors(n)
-    !       call this%lim(i)%update_min_max(rblock%p,rblock%cells(j)%basis,rblock%cells(j)%coefs)
-    !     end do
-    !   end do
-    ! end if
-      
-    ! do i = 1,this%n_cells_total
-    !   idx = global2local(i,gblock%n_cells)
-    !   nodes = pack_cell_node_coords( global2local(i,gblock%n_cells), [1,1,1], gblock%n_nodes, rblock%n_skip, gblock%node_coords )
-
-    !   ! special treatment for boundaries
-    !   if ( rblock%cells(i)%n_bnd > 0 ) then
-    !     do n = 1,n_cell_nodes
-    !       call this%lim(i)%update_min_max_point(rblock%p,rblock%cells(i)%basis,rblock%cells(i)%coefs,nodes(:,n))
-    !     end do
-    !     ! do n = 1,rblock%cells(i)%n_bnd
-    !       ! need face to vertex mapping
-    !       ! loop over appropriate vertices
-    !     ! end do
-    !   end if
-
-    !   ! update limiter values
-    !   do n = 1,n_cell_nodes
-    !     call this%lim(i)%update_limiter(rblock%p,rblock%cells(i)%basis,nodes(:,n),rblock%cells(i)%coefs)
-    !   end do
-    ! end do
-
-    ! ! alpha_e^(p) := max_{p<=q} alpha_e^(q), p>=1
-    ! select case(lim_mod)
-    ! case(0) ! don't modify
-    !   continue
-    ! case(1) ! maximum value + stop limiting after unlimited is found
-    !   do i = 1,this%n_cells_total
-    !     do v = 1,this%lim(i)%n_vars
-    !       do d = rblock%p%total_degree-1,0,-1
-    !         if ( abs(this%lim(i)%alpha(d+1,v)-one)<near_zero ) then
-    !           this%lim(i)%alpha(1:d+1,v) = one ! reset to unlimited
-    !           exit
-    !         end if
-    !         this%lim(i)%alpha(d+1,v) = maxval(this%lim(i)%alpha(d+1:rblock%p%total_degree,v))
-    !       end do
-    !     end do
-    !   end do
-    ! case(2) ! maximum value
-    !   do i = 1,this%n_cells_total
-    !     do v = 1,this%lim(i)%n_vars
-    !       do d = rblock%p%total_degree-1,0,-1
-    !         this%lim(i)%alpha(d+1,v) = maxval(this%lim(i)%alpha(d+1:rblock%p%total_degree,v))
-    !       end do
-    !     end do
-    !   end do
-    ! case(3) ! minimum value
-    !   do i = 1,this%n_cells_total
-    !     do v = 1,this%lim(i)%n_vars
-    !       do d = 0,rblock%p%total_degree-1
-    !         this%lim(i)%alpha(d+1,v) = minval(this%lim(i)%alpha(1:d+1,v))
-    !       end do
-    !     end do
-    !   end do
-    ! case(4) ! product value
-    !   do i = 1,this%n_cells_total
-    !     do v = 1,this%lim(i)%n_vars
-    !       do d = rblock%p%total_degree-1,1,-1
-    !         this%lim(i)%alpha(d+1,v) = product(this%lim(i)%alpha(d+1:rblock%p%total_degree,v))
-    !       end do
-    !     end do
-    !   end do
-    ! case default
-    !   continue
-    ! end select
-
-  end subroutine update_limiter_block
-    
-
-end module limiter_block_type
-
-
-
 module rec_derived_type
   use set_precision,          only : dp
   use rec_block_derived_type, only : rec_block_t
-  use limiter_block_type,     only : limiter_block_t
   use function_holder_type,   only : func_h_t
   implicit none
   private
@@ -7584,14 +6947,12 @@ module rec_derived_type
   type :: rec_t
     private
     integer, public :: n_blocks, n_dim, n_vars, degree
-    logical, public :: has_limiter
     type(rec_block_t), dimension(:), allocatable, public :: b
-    type(limiter_block_t), dimension(:), allocatable, public :: limb
   contains
     private
     procedure, public, pass :: destroy => destroy_rec_t
     procedure, public, pass :: solve   => solve_rec
-    procedure, public, pass :: eval_rb    => evaluate_reconstruction
+    procedure, public, pass :: eval_rb => evaluate_reconstruction
     procedure, public, pass :: get_block_error_norms, get_block_derivative_error_norms
   end type rec_t
 
@@ -7605,18 +6966,13 @@ contains
       call this%b%destroy()
       deallocate( this%b )
     end if
-    if ( allocated(this%limb) ) then
-      call this%limb%destroy()
-      deallocate( this%limb )
-    end if
-    this%has_limiter = .false.
     this%n_blocks = 0
     this%n_dim    = 0
     this%n_vars   = 0
     this%degree   = 0
   end subroutine destroy_rec_t
 
-  function constructor( grid, n_dim, degree, n_vars, n_skip, ext_fun, limit ) result(this)
+  function constructor( grid, n_dim, degree, n_vars, n_skip, ext_fun ) result(this)
     use grid_derived_type,      only : grid_type
     use rec_block_derived_type, only : rec_block_t
     use function_holder_type,   only : func_h_t
@@ -7624,7 +6980,6 @@ contains
     integer,                         intent(in) :: n_dim, degree, n_vars
     integer, dimension(:), optional, intent(in) :: n_skip
     class(func_h_t),       optional, intent(in) :: ext_fun
-    logical,               optional, intent(in) :: limit
     type(rec_t)                                 :: this
     integer, dimension(3) :: n_skip_
     integer :: i, n
@@ -7652,15 +7007,6 @@ contains
       end do
     end if
 
-    this%has_limiter = .false.
-    if ( present(limit) ) this%has_limiter = limit
-
-    if ( this%has_limiter ) then
-      allocate( this%limb(this%n_blocks) )
-      do i = 1,this%n_blocks
-        this%limb(i) = limiter_block_t(this%b(i),[(n,n=1,n_vars)])
-      end do
-    end if
   end function constructor
 
   pure function evaluate_reconstruction( this, blk, cell_idx,                  &
@@ -7684,13 +7030,12 @@ contains
   end function evaluate_reconstruction
 
   pure function get_block_error_norms( this, grid, blk, var_idx, n_terms, norms,         &
-                                      eval_fun, lim ) result(err_norms)
+                                      eval_fun ) result(err_norms)
     use set_constants,           only : zero
     use index_conversion,        only : global2local
     use grid_derived_type,       only : grid_type
     use quadrature_derived_type, only : quad_t
     use function_holder_type,    only : func_h_t
-    use zero_mean_limiter_type,  only : zero_mean_limit_t
     class(rec_t),             intent(in) :: this
     type(grid_type),          intent(in) :: grid
     integer,                  intent(in) :: blk
@@ -7698,7 +7043,6 @@ contains
     integer,                  intent(in) :: n_terms
     integer, dimension(:),    intent(in) :: norms
     class(func_h_t),          intent(in) :: eval_fun
-    logical,                  intent(in) :: lim
     real(dp), dimension(size(var_idx),size(norms)) :: err_norms
     integer, dimension(this%n_dim) :: cell_idx
     integer, dimension(3) :: tmp_idx
@@ -7712,29 +7056,17 @@ contains
           cell_idx = global2local(i,grid%gblock(blk)%n_cells(1:this%n_dim))
           tmp_idx = 1
           tmp_idx(1:this%n_dim) = cell_idx
-          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),                &
-                                                    tmp_idx(2),                &
+          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),       &
+                                                    tmp_idx(2),                 &
                                                     tmp_idx(3) ) )
-            if ( lim ) then
-            err_norms(:,n) = max( err_norms(:,n),                              &
-                                  this%b(blk)%get_cell_error( quad,                   &
-                                                       i,                      &
-                                                       n_terms,                &
-                                                       norms(n),               &
-                                                       n_var,                  &
-                                                       var_idx,                &
-                                                       eval_fun,               &
-                                                       lim=this%limb(blk)%lim(i)) )
-            else
-              err_norms(:,n) = max( err_norms(:,n),                            &
-                                  this%b(blk)%get_cell_error( quad,            &
-                                                       i,                      &
-                                                       n_terms,                &
-                                                       norms(n),               &
-                                                       n_var,                  &
-                                                       var_idx,                &
-                                                       eval_fun ) )
-            end if
+            err_norms(:,n) = max( err_norms(:,n),                               &
+                                this%b(blk)%get_cell_error( quad,               &
+                                                      i,                        &
+                                                      n_terms,                  &
+                                                      norms(n),                 &
+                                                      n_var,                    &
+                                                      var_idx,                  &
+                                                      eval_fun ) )
           end associate
         end do
       else
@@ -7742,27 +7074,16 @@ contains
           cell_idx = global2local( i, grid%gblock(blk)%n_cells(1:this%n_dim) )
           tmp_idx = 1
           tmp_idx(1:this%n_dim) = cell_idx
-          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),                &
+          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),      &
                                                     tmp_idx(2),                &
                                                     tmp_idx(3) ) )
-            if ( lim ) then
-              err_norms(:,n) = err_norms(:,n) + this%b(blk)%get_cell_error( quad,       &
-                                                                    i,          &
-                                                                    n_terms,    &
-                                                                    norms(n),   &
-                                                                    n_var,      &
-                                                                    var_idx,    &
-                                                                    eval_fun,   &
-                                                                    lim=this%limb(blk)%lim(i) )
-            else
-              err_norms(:,n) = err_norms(:,n) + this%b(blk)%get_cell_error( quad,       &
+            err_norms(:,n) = err_norms(:,n) + this%b(blk)%get_cell_error( quad, &
                                                                     i,          &
                                                                     n_terms,    &
                                                                     norms(n),   &
                                                                     n_var,      &
                                                                     var_idx,    &
                                                                     eval_fun )
-            end if
           end associate
         end do
         err_norms(:,n) = err_norms(:,n) / real( this%b(blk)%n_cells_total, dp )
@@ -7772,13 +7093,12 @@ contains
 
 
   pure function get_block_derivative_error_norms( this, grid, blk, var_idx, n_terms, norms,         &
-                                                  eval_fun, order, lim ) result(err_norms)
+                                                  eval_fun, order ) result(err_norms)
     use set_constants,           only : zero
     use index_conversion,        only : global2local
     use grid_derived_type,       only : grid_type
     use quadrature_derived_type, only : quad_t
     use function_holder_type,    only : func_h_t
-    use zero_mean_limiter_type,  only : zero_mean_limit_t
     class(rec_t),             intent(in) :: this
     type(grid_type),          intent(in) :: grid
     integer,                  intent(in) :: blk
@@ -7787,7 +7107,6 @@ contains
     integer, dimension(:),    intent(in) :: norms
     integer, dimension(this%n_dim), intent(in) :: order
     class(func_h_t),          intent(in) :: eval_fun
-    logical,                  intent(in) :: lim
     real(dp), dimension(size(var_idx),size(norms)) :: err_norms
     integer, dimension(this%n_dim) :: cell_idx
     integer, dimension(3) :: tmp_idx
@@ -7801,31 +7120,18 @@ contains
           cell_idx = global2local(i,grid%gblock(blk)%n_cells(1:this%n_dim))
           tmp_idx = 1
           tmp_idx(1:this%n_dim) = cell_idx
-          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),                &
+          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),      &
                                                     tmp_idx(2),                &
                                                     tmp_idx(3) ) )
-            if ( lim ) then
             err_norms(:,n) = max( err_norms(:,n),                              &
-                                  this%b(blk)%get_cell_derivative_error( quad, &
-                                                       i,                      &
-                                                       n_terms,                &
-                                                       norms(n),               &
-                                                       n_var,                  &
-                                                       var_idx,                &
-                                                       eval_fun,               &
-                                                       order,                  &
-                                                       lim=this%limb(blk)%lim(i)) )
-            else
-              err_norms(:,n) = max( err_norms(:,n),                            &
-                                  this%b(blk)%get_cell_derivative_error( quad, &
-                                                       i,                      &
-                                                       n_terms,                &
-                                                       norms(n),               &
-                                                       n_var,                  &
-                                                       var_idx,                &
-                                                       eval_fun,               &
-                                                       order ) )
-            end if
+                                this%b(blk)%get_cell_derivative_error( quad,   &
+                                                      i,                       &
+                                                      n_terms,                 &
+                                                      norms(n),                &
+                                                      n_var,                   &
+                                                      var_idx,                 &
+                                                      eval_fun,                &
+                                                      order ) )
           end associate
         end do
       else
@@ -7833,31 +7139,18 @@ contains
           cell_idx = global2local( i, grid%gblock(blk)%n_cells(1:this%n_dim) )
           tmp_idx = 1
           tmp_idx(1:this%n_dim) = cell_idx
-          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),                &
+          associate( quad => grid%gblock(blk)%grid_vars%quad( tmp_idx(1),      &
                                                     tmp_idx(2),                &
                                                     tmp_idx(3) ) )
-            if ( lim ) then
-              err_norms(:,n) = err_norms(:,n) +                                 &
-                               this%b(blk)%get_cell_derivative_error( quad,     &
-                                                                    i,          &
-                                                                    n_terms,    &
-                                                                    norms(n),   &
-                                                                    n_var,      &
-                                                                    var_idx,    &
-                                                                    eval_fun,   &
-                                                                    order,      &
-                                                                    lim=this%limb(blk)%lim(i) )
-            else
-              err_norms(:,n) = err_norms(:,n) +                                 &
-                               this%b(blk)%get_cell_derivative_error( quad,     &
-                                                                    i,          &
-                                                                    n_terms,    &
-                                                                    norms(n),   &
-                                                                    n_var,      &
-                                                                    var_idx,    &
-                                                                    eval_fun,   &
-                                                                    order )
-            end if
+            err_norms(:,n) = err_norms(:,n) +                                  &
+                              this%b(blk)%get_cell_derivative_error( quad,     &
+                                                                  i,           &
+                                                                  n_terms,     &
+                                                                  norms(n),    &
+                                                                  n_var,       &
+                                                                  var_idx,     &
+                                                                  eval_fun,    &
+                                                                  order )
           end associate
         end do
         err_norms(:,n) = err_norms(:,n) / real( this%b(blk)%n_cells_total, dp )
@@ -7899,12 +7192,7 @@ contains
       call this%b(blk)%init_cells( grid, term_start, term_end )
       call this%b(blk)%solve( term_end, n_vars, [(n,n=1,n_vars)] )
       if ( present(ext_fun) ) then
-        error_norms = this%get_block_error_norms( grid, blk, [(n,n=1,n_vars)], term_end, [1,2,huge(1)], ext_fun, .false. )
-        ! error_norms = this%b(blk)%get_error_norm( grid%gblock(blk),         &
-        !                                           [(n,n=1,n_vars)],         &
-        !                                           term_end,                 &
-        !                                           [1,2,huge(1)],            &
-        !                                           ext_fun )
+        error_norms = this%get_block_error_norms( grid, blk, [(n,n=1,n_vars)], term_end, [1,2,huge(1)], ext_fun )
         write(*,'(A,I0,A)') 'Block ', blk, ' error norms: '
         do v = 1,n_vars
           write(*,'(I0,3(" ",ES18.12))') v, (error_norms(v,n), n = 1,3)
@@ -7913,7 +7201,7 @@ contains
           do nd = 1,this%b(blk)%p%total_degree
             do nt = this%b(blk)%p%idx(nd-1)+1,this%b(blk)%p%idx(nd)
               d_idx = this%b(blk)%p%exponents(:,nt)
-              error_norms = this%get_block_derivative_error_norms( grid, blk, [(n,n=1,n_vars)], term_end, [1,2,huge(1)], ext_fun, d_idx, .false. )
+              error_norms = this%get_block_derivative_error_norms( grid, blk, [(n,n=1,n_vars)], term_end, [1,2,huge(1)], ext_fun, d_idx )
               call write_integer_tuple(d_idx,derivative_index)
               write(*,'(A,I0,A)') 'Block ', blk, ' derivative error norms: ('//trim(derivative_index)//')'
               do v = 1,n_vars
@@ -7923,75 +7211,36 @@ contains
           end do
         end if
       end if
-      if ( this%has_limiter ) then
-        call this%limb(blk)%update( this%b(blk), grid%gblock(blk) )
-        if ( present(ext_fun) ) then
-          error_norms = this%get_block_error_norms( grid, blk, [(n,n=1,n_vars)], term_end, [1,2,huge(1)], ext_fun, .true. )
-          write(*,'(A,I0,A)') 'Block ', blk, ' error norms: (limited)'
-          do v = 1,n_vars
-            write(*,'(I0,3(" ",ES18.12))') v, (error_norms(v,n), n = 1,3)
-          end do
-          if (ext_fun%derivatives_implemented) then
-            do nd = 1,this%b(blk)%p%total_degree
-              do nt = this%b(blk)%p%idx(nd-1)+1,this%b(blk)%p%idx(nd)
-                d_idx = this%b(blk)%p%exponents(:,nt)
-                error_norms = this%get_block_derivative_error_norms( grid, blk, [(n,n=1,n_vars)], term_end, [1,2,huge(1)], ext_fun, d_idx, .true. )
-                call write_integer_tuple(d_idx,derivative_index)
-                write(*,'(A,I0,A)') 'Block ', blk, ' derivative error norms: ('//trim(derivative_index)//')'
-                do v = 1,n_vars
-                  write(*,'(I0,3(" ",ES18.12))') v, (error_norms(v,n), n = 1,3)
-                end do
-              end do
-            end do
-          end if
-        end if
-      end if
       if (present(soln_name)) then
-        if ( this%has_limiter ) then
-          call output_block_reconstruction( grid%gblock(blk), this%b(blk), &
-                                          blk, soln_name, old,             &
-                                          limiter_block=this%limb(blk),    &
-                                          quad_order=quad_order,           &
-                                          ext_fun=ext_fun,                 &
-                                          rec_out=.true.,                  &
-                                          ext_out=.true.,                  &
-                                          err_out=.true.,                  &
-                                          diff_out=output_derivatives,     &
-                                          strand_id=1,             &
+        call output_block_reconstruction( grid%gblock(blk), this%b(blk),        &
+                                          blk, soln_name, old,                  &
+                                          quad_order=quad_order,                &
+                                          ext_fun=ext_fun,                      &
+                                          rec_out=.true.,                       &
+                                          ext_out=.true.,                       &
+                                          err_out=.true.,                       &
+                                          diff_out=output_derivatives,          &
+                                          strand_id=1,                          &
                                           solution_time=zero )
-        else
-          call output_block_reconstruction( grid%gblock(blk), this%b(blk),   &
-                                          blk, soln_name, old,             &
-                                          quad_order=quad_order,           &
-                                          ext_fun=ext_fun,                 &
-                                          rec_out=.true.,                  &
-                                          ext_out=.true.,                  &
-                                          err_out=.true.,                  &
-                                          diff_out=output_derivatives,     &
-                                          strand_id=1,             &
-                                          solution_time=zero )
-        end if
       end if
     end do
   end subroutine solve_rec
 
   subroutine output_block_reconstruction( gblock1, rec, blk, base_name, old, &
-                                          limiter_block, n_skip, quad_order, &
+                                          n_skip, quad_order,                &
                                           ext_fun, rec_out, ext_out, err_out,&
-                                          diff_out, n_terms, tag,                      &
+                                          diff_out, n_terms, tag,            &
                                           solution_time, strand_id )
     use set_constants, only : max_text_line_length
     use index_conversion, only : global2local
     use rec_block_derived_type,     only : rec_block_t
     use grid_derived_type,          only : grid_block
-    use limiter_block_type,         only : limiter_block_t
     use function_holder_type,       only : func_h_t
     type(grid_block),                intent(in)    :: gblock1
     type(rec_block_t),               intent(in)    :: rec
     integer,                         intent(in)    :: blk
     character(*),                    intent(in)    :: base_name
     logical,                         intent(inout) :: old
-    type(limiter_block_t), optional, intent(in)    :: limiter_block
     integer, dimension(:), optional, intent(in)    :: n_skip
     integer,               optional, intent(in)    :: quad_order
     class(func_h_t),       optional, intent(in)    :: ext_fun
@@ -8008,44 +7257,25 @@ contains
     else
       file_name = trim(file_name)//'.dat'
     end if
-    if ( present(limiter_block) ) then
-      do i = 1,rec%n_cells_total
-        call output_cell_reconstruction( gblock1, rec, blk,                     &
-                                        global2local(i,rec%n_cells),            &
-                                        file_name, old,                         &
-                                        lim=limiter_block%lim(i),               &
-                                        n_skip=n_skip,                          &
-                                        quad_order=quad_order,                  &
-                                        ext_fun=ext_fun,                        &
-                                        rec_out=rec_out,                        &
-                                        ext_out=ext_out,                        &
-                                        err_out=err_out,                        &
-                                        diff_out=diff_out,                      &
-                                        n_terms=n_terms,                        &
-                                        strand_id=strand_id,                    &
-                                        solution_time=solution_time )
-      end do
-    else
-      do i = 1,rec%n_cells_total
-        call output_cell_reconstruction( gblock1, rec, blk,                     &
-                                        global2local(i,rec%n_cells),            &
-                                        file_name, old,                         &
-                                        n_skip=n_skip,                          &
-                                        quad_order=quad_order,                  &
-                                        ext_fun=ext_fun,                        &
-                                        rec_out=rec_out,                        &
-                                        ext_out=ext_out,                        &
-                                        err_out=err_out,                        &
-                                        diff_out=diff_out,                      &
-                                        n_terms=n_terms,                        &
-                                        strand_id=strand_id,                    &
-                                        solution_time=solution_time )
-      end do
-    end if
+    do i = 1,rec%n_cells_total
+      call output_cell_reconstruction( gblock1, rec, blk,                     &
+                                      global2local(i,rec%n_cells),            &
+                                      file_name, old,                         &
+                                      n_skip=n_skip,                          &
+                                      quad_order=quad_order,                  &
+                                      ext_fun=ext_fun,                        &
+                                      rec_out=rec_out,                        &
+                                      ext_out=ext_out,                        &
+                                      err_out=err_out,                        &
+                                      diff_out=diff_out,                      &
+                                      n_terms=n_terms,                        &
+                                      strand_id=strand_id,                    &
+                                      solution_time=solution_time )
+    end do
   end subroutine output_block_reconstruction
 
   subroutine output_cell_reconstruction( gblock1, rec, blk, cell_idx,          &
-                                         file_name, old, lim, n_skip, quad_order,   &
+                                         file_name, old, n_skip, quad_order,   &
                                          ext_fun, rec_out, ext_out, err_out, diff_out,  &
                                          n_terms, strand_id, solution_time )
     use index_conversion, only : local2global
@@ -8056,14 +7286,12 @@ contains
     use rec_block_derived_type, only : rec_block_t
     use grid_derived_type,          only : grid_block
     use function_holder_type,       only : func_h_t
-    use zero_mean_limiter_type,     only : zero_mean_limit_t
     type(grid_block),                intent(in)    :: gblock1
     type(rec_block_t),               intent(in)    :: rec
     integer,                         intent(in)    :: blk
     integer, dimension(:),           intent(in)    :: cell_idx
     character(*),                    intent(in)    :: file_name
     logical,                         intent(inout) :: old
-    type(zero_mean_limit_t), optional, intent(in)    :: lim
     integer, dimension(:), optional, intent(in)    :: n_skip
     integer,               optional, intent(in)    :: quad_order
     class(func_h_t),       optional, intent(in)    :: ext_fun
@@ -8170,7 +7398,7 @@ contains
       x = phys_quad%quad_pts(1:n_dim,q)
       NODE_DATA( 1:n_dim, q ) = x
       tmp_var(:,1) = rec%eval_rb( cell_idx, x, [(i,i=1,rec%n_vars)],              &
-                               n_terms=n_terms_, lim=lim )
+                               n_terms=n_terms_ )
       if ( opt(2) .or. opt(3) ) then
         tmp_var(:,2) = ext_fun%eval(x)
         tmp_var(:,3) = tmp_var(:,1) - tmp_var(:,2)
@@ -8188,7 +7416,7 @@ contains
           do n = 2,n_terms_
             cnt = cnt + 1
             tmp_var(1:1,1) = rec%eval_rb( cell_idx, x, [i],              &
-                               n_terms=n_terms_, order=rec%p%exponents(:,n), lim=lim )
+                               n_terms=n_terms_, order=rec%p%exponents(:,n) )
             NODE_DATA(cnt,q) = tmp_var(1,1)
           end do
         end do
@@ -8207,7 +7435,7 @@ contains
           do n = 2,n_terms_
             cnt = cnt + 1
             tmp_var(1:1,1) = rec%eval_rb( cell_idx, x, [i],              &
-                               n_terms=n_terms_, order=rec%p%exponents(:,n), lim=lim ) &
+                               n_terms=n_terms_, order=rec%p%exponents(:,n) ) &
                                - ext_fun%dx_eval(x,order=rec%p%exponents(:,n))
             NODE_DATA(cnt,q) = tmp_var(1,1)
           end do
@@ -8382,7 +7610,7 @@ contains
     call grid%gblock(1)%grid_vars%setup( grid%gblock(1) )
   end subroutine setup_grid_generate
 
-  subroutine setup_reconstruction( grid, n_dim, n_vars, degree, rec, eval_fun, limit )
+  subroutine setup_reconstruction( grid, n_dim, n_vars, degree, rec, eval_fun )
     use grid_derived_type,    only : grid_type
     use rec_derived_type,     only : rec_t
     use function_holder_type, only : func_h_t
@@ -8390,8 +7618,7 @@ contains
     integer,                   intent(in)  :: n_dim, n_vars, degree
     type(rec_t),               intent(out) :: rec
     class(func_h_t), optional, intent(in)  :: eval_fun
-    logical,         optional, intent(in)  :: limit
-    rec = rec_t( grid, n_dim, degree, n_vars, ext_fun=eval_fun, limit=limit )
+    rec = rec_t( grid, n_dim, degree, n_vars, ext_fun=eval_fun )
   end subroutine setup_reconstruction
 
   subroutine make_eval_function(eval_fun)
@@ -8452,11 +7679,11 @@ contains
     use grid_derived_type,    only : grid_type
     use function_holder_type, only : func_h_t
     use rec_derived_type,     only : rec_t
-    use project_inputs,       only : n_dim, n_rec_vars, rec_degree, limit
+    use project_inputs,       only : n_dim, n_rec_vars, rec_degree
     type(grid_type),           intent(in)  :: grid
     class(func_h_t),           intent(in)  :: eval_fun
     type(rec_t),               intent(out) :: rec
-    call setup_reconstruction( grid, n_dim, n_rec_vars, rec_degree, rec, eval_fun=eval_fun, limit=limit )
+    call setup_reconstruction( grid, n_dim, n_rec_vars, rec_degree, rec, eval_fun=eval_fun )
   end subroutine make_reconstruction
 
 end module test_problem
