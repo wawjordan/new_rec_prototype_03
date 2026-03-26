@@ -621,7 +621,7 @@ module index_conversion
   public :: global2local_face, local2global_face
   public :: cell_face_nbors
   public :: get_face_idx_from_id
-  public :: get_reshape_indices
+  public :: get_reshape_indices, get_dim_order
   public :: range_intersect, bound_intersect
   public :: node_to_cell_idx, get_neighbor_idx
   public :: shift_val_to_start
@@ -880,6 +880,33 @@ contains
     where ( hi .or. varies ) idx_end   = sz_in
 
   end subroutine get_reshape_indices
+
+  pure subroutine get_dim_order( loc, dir, end_pt )
+    use quick_sort, only : sort
+    integer, dimension(:),         intent(in)  :: loc
+    integer, dimension(size(loc)), intent(out) :: dir
+    integer, dimension(size(loc)), intent(out) :: end_pt
+    logical, dimension(size(loc)) :: varies
+    integer, dimension(size(loc)) :: tmp
+    integer :: i, n_dim, cnt
+    n_dim = size(loc)
+    dir    = [(i,i=1,n_dim)]
+    end_pt = 0
+    where (loc==0) end_pt = -1
+    where (loc==1) end_pt =  1
+    varies = (loc==2)
+    cnt = count(varies)
+    if ( cnt == 0     ) return
+    if ( cnt == n_dim ) return
+    tmp = dir
+    dir(1:cnt)       = pack(tmp,varies)
+    dir(cnt+1:n_dim) = pack(tmp,.not.varies)
+    tmp = end_pt
+    end_pt(1:cnt)       = pack(tmp,varies)
+    end_pt(cnt+1:n_dim) = pack(tmp,.not.varies)
+  end subroutine get_dim_order
+
+
 
   pure elemental function range_intersect( startA, endA, startB, endB )
     integer, intent(in) :: startA, endA, startB, endB
@@ -3283,8 +3310,8 @@ module interpolant_derived_type
     procedure,         pass   :: lagbary, lagbary_wderiv, lagbary_wderiv2
     procedure,         pass   :: lagbary_2D, lagbary_2D_wgrad, lagbary_2D_whess
     procedure,         pass   :: lagbary_3D, lagbary_3D_wgrad, lagbary_3D_whess
-    procedure, public, pass   :: calc_grid_metrics, calc_grid_metrics_alt
-    procedure, public, pass   :: normal_vectors
+    procedure, public, pass   :: calc_grid_metrics_2D, calc_grid_metrics_3D, calc_grid_metrics_alt
+    procedure, public, pass   :: normal_vectors_2D, normal_vectors_3D
     ! procedure, public, pass   :: map_point_3D
     procedure, public, pass   :: map_point_3D_curve, map_point_3D_surface, map_point_3D_volume
   end type interpolant_t
@@ -3603,19 +3630,42 @@ contains
     call this%lagbary(         x(3), 3, htmp1, Npts,               hess(1) )
   end subroutine lagbary_3D_whess
 
-  pure function calc_grid_metrics(this,point,X1,X2,X3) result(Ja)
+  pure function calc_grid_metrics_2D(this,point,X1,X2,X3) result(Ja)
+    use set_constants, only : zero
+    use math, only : cross_product
+    class(interpolant_t),       intent(in) :: this
+    real(dp), dimension(3),     intent(in) :: point
+    real(dp), dimension(:,:),   intent(in) :: X1, X2, X3
+    real(dp), dimension(3,3) :: Ja
+    real(dp), dimension(3) :: a1, a2, a3
+    real(dp), dimension(2) :: tmp
+    real(dp) :: junk
+    integer, dimension(2) :: Npts
+    Ja = zero
+    a1 = zero
+    a2 = zero
+    a3 = [zero,zero,one]
+    Npts = shape(X1)
+    call this%lagbary_2D_wgrad( point, X1, Npts, junk, tmp )
+    a1(1) = tmp(1)
+    a2(1) = tmp(2)
+    call this%lagbary_2D_wgrad( point, X2, Npts, junk, tmp )
+    a1(2) = tmp(1)
+    a2(2) = tmp(2)
+    Ja(:,1) = cross_product(a2,a3)
+    Ja(:,2) = cross_product(a3,a1)
+    Ja(:,3) = [zero,zero,one]
+  end function calc_grid_metrics_2D
+
+  pure function calc_grid_metrics_3D(this,point,X1,X2,X3) result(Ja)
     use set_constants, only : zero
     class(interpolant_t),       intent(in) :: this
     real(dp), dimension(3),     intent(in) :: point
     real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
     real(dp), dimension(3,3) :: Ja
-    ! real(dp), dimension(size(X1,1),size(X1,2),size(X1,3),3) :: X
     real(dp), dimension(size(X1,1),size(X1,2),size(X1,3))   :: tmp
     real(dp), dimension(3) :: dX_l, dX_m, dd1, dd2, dd3
     real(dp) :: junk
-    integer, dimension(3), parameter :: ijk = [1,2,3]
-    integer, dimension(3), parameter :: kij = cshift(ijk,1)
-    integer, dimension(3), parameter :: jki = cshift(kij,1)
     integer, dimension(3) :: Npts
     Ja = zero
     Npts = shape(X1)
@@ -3654,7 +3704,7 @@ contains
     Ja(3,1) = -half*( dd3(2) - dd2(3) );
     Ja(3,2) = -half*( dd1(3) - dd3(1) );
     Ja(3,3) = -half*( dd2(1) - dd1(2) );
-  end function calc_grid_metrics
+  end function calc_grid_metrics_3D
 
   pure function calc_grid_metrics_alt(this,point,X1,X2,X3) result(Ja)
     use set_constants, only : zero
@@ -3695,58 +3745,82 @@ contains
     end do
   end function calc_grid_metrics_alt
 
-  pure function normal_vectors(this,point,X1,X2,X3) result(Nvec)
+  pure function normal_vectors_3D(this,point,X1,X2,X3) result(Nvec)
     use set_constants, only : one
     class(interpolant_t),       intent(in) :: this
     real(dp), dimension(3),     intent(in) :: point
     real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
     real(dp), dimension(3,3) :: Nvec
-    real(dp), dimension(:,:,:), allocatable :: X1_tmp, X2_tmp, X3_tmp
-    integer, dimension(3) :: sz
-
-    sz = shape(X1)
-    if ( all( sz > 1 ) ) then
-      Nvec = this%calc_grid_metrics(point,X1,X2,X3)
-    else
-      if ( all( sz == 1 ) ) then
-        allocate( X1_tmp(2,2,2), &
-                  X2_tmp(2,2,2), &
-                  X3_tmp(2,2,2) )
-        X1_tmp = spread(spread(spread(X1(1,1,1),1,2),2,2),3,2)
-        X2_tmp = spread(spread(spread(X2(1,1,1),1,2),2,2),3,2)
-        X3_tmp = spread(spread(spread(X3(1,1,1),1,2),2,2),3,2)
-        X1_tmp(2,:,:) = X1_tmp(2,:,:) + one
-        X2_tmp(:,2,:) = X2_tmp(:,2,:) + one
-        X3_tmp(:,:,2) = X3_tmp(:,:,2) + one
-      elseif ( all(sz([2,3]) == 1) ) then
-        allocate( X1_tmp(sz(1),2,2), &
-                  X2_tmp(sz(1),2,2), &
-                  X3_tmp(sz(1),2,2) )
-        X1_tmp = spread(spread(X1(:,1,1),2,2),3,2)
-        X2_tmp = spread(spread(X2(:,1,1),2,2),3,2)
-        X3_tmp = spread(spread(X3(:,1,1),2,2),3,2)
-        X2_tmp(:,2,:) = X2_tmp(:,2,:) + one
-        X3_tmp(:,:,2) = X3_tmp(:,:,2) + one
-      elseif( sz(3) == 1 ) then
-        allocate( X1_tmp(sz(1),sz(2),2), &
-                  X2_tmp(sz(1),sz(2),2), &
-                  X3_tmp(sz(1),sz(2),2) )
-        X1_tmp = spread(X1(:,:,1),3,2)
-        X2_tmp = spread(X2(:,:,1),3,2)
-        X3_tmp = spread(X3(:,:,1),3,2)
-        X3_tmp(:,:,2) = X3_tmp(:,:,2) + one
-      end if
-      Nvec = this%calc_grid_metrics(point,X1_tmp,X2_tmp,X3_tmp)
-    end if
-    
+    Nvec = this%calc_grid_metrics_3D(point,X1,X2,X3)
     Nvec(:,1) = Nvec(:,1)/norm2(Nvec(:,1))
     Nvec(:,2) = Nvec(:,2)/norm2(Nvec(:,2))
     Nvec(:,3) = Nvec(:,3)/norm2(Nvec(:,3))
+  end function normal_vectors_3D
 
-    if ( allocated(X1_tmp) ) deallocate(X1_tmp)
-    if ( allocated(X2_tmp) ) deallocate(X2_tmp)
-    if ( allocated(X3_tmp) ) deallocate(X3_tmp)
-  end function normal_vectors
+  pure function normal_vectors_2D(this,point,X1,X2,X3) result(Nvec)
+    use set_constants, only : one
+    class(interpolant_t),       intent(in) :: this
+    real(dp), dimension(3),     intent(in) :: point
+    real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+    real(dp), dimension(3,3) :: Nvec
+    Nvec = this%calc_grid_metrics_2D(point,X1(:,:,1),X2(:,:,1),X3(:,:,1))
+    Nvec(:,1) = Nvec(:,1)/norm2(Nvec(:,1))
+    Nvec(:,2) = Nvec(:,2)/norm2(Nvec(:,2))
+    Nvec(:,3) = Nvec(:,3)/norm2(Nvec(:,3))
+  end function normal_vectors_2D
+
+  ! pure function normal_vectors(this,point,X1,X2,X3) result(Nvec)
+  !   use set_constants, only : one
+  !   class(interpolant_t),       intent(in) :: this
+  !   real(dp), dimension(3),     intent(in) :: point
+  !   real(dp), dimension(:,:,:), intent(in) :: X1, X2, X3
+  !   real(dp), dimension(3,3) :: Nvec
+  !   real(dp), dimension(:,:,:), allocatable :: X1_tmp, X2_tmp, X3_tmp
+  !   integer, dimension(3) :: sz
+
+  !   sz = shape(X1)
+  !   if ( all( sz > 1 ) ) then
+  !     Nvec = this%calc_grid_metrics(point,X1,X2,X3)
+  !   else
+  !     if ( all( sz == 1 ) ) then
+  !       allocate( X1_tmp(2,2,2), &
+  !                 X2_tmp(2,2,2), &
+  !                 X3_tmp(2,2,2) )
+  !       X1_tmp = spread(spread(spread(X1(1,1,1),1,2),2,2),3,2)
+  !       X2_tmp = spread(spread(spread(X2(1,1,1),1,2),2,2),3,2)
+  !       X3_tmp = spread(spread(spread(X3(1,1,1),1,2),2,2),3,2)
+  !       X1_tmp(2,:,:) = X1_tmp(2,:,:) + one
+  !       X2_tmp(:,2,:) = X2_tmp(:,2,:) + one
+  !       X3_tmp(:,:,2) = X3_tmp(:,:,2) + one
+  !     elseif ( all(sz([2,3]) == 1) ) then
+  !       allocate( X1_tmp(sz(1),2,2), &
+  !                 X2_tmp(sz(1),2,2), &
+  !                 X3_tmp(sz(1),2,2) )
+  !       X1_tmp = spread(spread(X1(:,1,1),2,2),3,2)
+  !       X2_tmp = spread(spread(X2(:,1,1),2,2),3,2)
+  !       X3_tmp = spread(spread(X3(:,1,1),2,2),3,2)
+  !       X2_tmp(:,2,:) = X2_tmp(:,2,:) + one
+  !       X3_tmp(:,:,2) = X3_tmp(:,:,2) + one
+  !     elseif( sz(3) == 1 ) then
+  !       allocate( X1_tmp(sz(1),sz(2),2), &
+  !                 X2_tmp(sz(1),sz(2),2), &
+  !                 X3_tmp(sz(1),sz(2),2) )
+  !       X1_tmp = spread(X1(:,:,1),3,2)
+  !       X2_tmp = spread(X2(:,:,1),3,2)
+  !       X3_tmp = spread(X3(:,:,1),3,2)
+  !       X3_tmp(:,:,2) = X3_tmp(:,:,2) + one
+  !     end if
+  !     Nvec = this%calc_grid_metrics(point,X1_tmp,X2_tmp,X3_tmp)
+  !   end if
+    
+  !   Nvec(:,1) = Nvec(:,1)/norm2(Nvec(:,1))
+  !   Nvec(:,2) = Nvec(:,2)/norm2(Nvec(:,2))
+  !   Nvec(:,3) = Nvec(:,3)/norm2(Nvec(:,3))
+
+  !   if ( allocated(X1_tmp) ) deallocate(X1_tmp)
+  !   if ( allocated(X2_tmp) ) deallocate(X2_tmp)
+  !   if ( allocated(X3_tmp) ) deallocate(X3_tmp)
+  ! end function normal_vectors
 
   pure subroutine map_point_3D_curve(this,point,X1,X2,X3,xyz,dS)
     class(interpolant_t),   intent(in)  :: this
@@ -3861,108 +3935,6 @@ contains
     integer k
     b = real( 2* ( get_hypercube_vertex_coord(spread(2,1,n_dim),[(k,k=1,n_dim)],i) - 1 ) - 1, dp )
   end function get_end_pts
-
-!   subroutine edge_quad_2D(N,edge,pts,wts)
-!     integer,  dimension(2),                 intent(in) :: N
-!     integer,                                intent(in) :: edge
-!     real(dp), dimension(2,N((edge-1)/2+1)), intent(out) :: pts
-!     real(dp), dimension(  N((edge-1)/2+1)), intent(out) :: wts
-!     integer :: dir1, dir2, Npts !, i, m
-!     real(dp), dimension(1) :: end_pt
-!     dir1 = (edge-1)/2 + 1
-!     dir2 = mod(dir1,2) + 1
-!     Npts = N(dir1)
-!     end_pt = get_end_pts(modulo(edge-1,2)+1,1)
-!     pts(dir1,:) = x1D(1:Npts,N(dir1))
-!     pts(dir2,:) = end_pt(1)
-!     wts(:)      = w1D(1:Npts,N(dir1))
-!   end subroutine edge_quad_2D
-
-! !================================ edge_quad_3D ===============================80
-! !>
-! !<
-! !=============================================================================80
-!   subroutine edge_quad_3D(N,edge,pts,wts)
-!     integer,  dimension(3),                 intent(in)  :: N
-!     integer,                                intent(in)  :: edge
-!     real(dp), dimension(3,N((edge-1)/4+1)), intent(out) :: pts
-!     real(dp), dimension(  N((edge-1)/4+1)), intent(out) :: wts
-!     integer :: dir1, dir2, dir3, Npts, tmp
-!     real(dp), dimension(2) :: end_pts
-!     dir1 = (edge-1)/4 + 1
-!     dir2 = mod(dir1,3) + 1
-!     dir3 = mod(dir1+1,3) + 1
-!     Npts = N(dir1)
-!     if (dir2 > dir3) then
-!       tmp = dir3
-!       dir3 = dir2
-!       dir2 = tmp
-!     end if
-!     end_pts = get_end_pts(modulo(edge-1,4)+1,2)
-!     pts(dir1,:) = x1D(1:Npts,N(dir1))
-!     pts(dir2,:) = end_pts(1)
-!     pts(dir3,:) = end_pts(2)
-!     wts(:)      = w1D(1:Npts,N(dir1))
-!   end subroutine edge_quad_3D
-
-! !================================ face_quad_2D ===============================80
-! !>
-! !<
-! !=============================================================================80
-!   subroutine face_quad_2D(N,pts,wts)
-!     integer,  dimension(2),            intent(in)  :: N
-!     real(dp), dimension(2,product(N)), intent(out) :: pts
-!     real(dp), dimension(  product(N)), intent(out) :: wts
-!     integer :: i, j, m
-!     m = 0
-!     do j = 1,N(2)
-!       do i = 1,N(1)
-!         m = m + 1
-!         pts(1,m) = x1D(i,N(1))
-!         pts(2,m) = x1D(j,N(2))
-!         wts(m)   = w1D(i,N(1))*w1D(j,N(2))
-!       end do
-!     end do
-!   end subroutine face_quad_2D
-
-!   subroutine face_quad_3D(N,face,pts,wts)
-!     use set_constants, only : one
-!     integer, dimension(3),  intent(in) :: N
-!     integer, intent(in) :: face
-!     real(dp), dimension(3,N(modulo((face-1)/2+1,3)+1)   &
-!                          *N(modulo((face-1)/2+2,3)+1)), &
-!                             intent(out) :: pts
-!     real(dp), dimension(  N(modulo((face-1)/2+1,3)+1)   &
-!                          *N(modulo((face-1)/2+2,3)+1)), &
-!                             intent(out) :: wts
-!     integer :: dir1, dir2, dir3, tmp, i, j, m
-!     real(dp), dimension(1) :: end_pt
-!     real(dp) :: w2, w3
-!     dir1 = (face-1)/2+1
-!     dir2 = mod(dir1  ,3) + 1
-!     dir3 = mod(dir1+1,3) + 1
-!     if (dir2 > dir3) then
-!       tmp = dir3
-!       dir3 = dir2
-!       dir2 = tmp
-!     end if
-!     end_pt = get_end_pts(modulo(face-1,2)+1,1)
-!     end_pt(1) = merge( end_pt(1), zero, N(dir1) > 1 )
-!     m = 0
-!     do j = 1,N(dir3)
-!       do i = 1,N(dir2)
-!         m = m + 1
-!         pts(dir1,m) = end_pt(1)
-!         pts(dir2,m) = x1D(i,N(dir2))
-!         pts(dir3,m) = x1D(j,N(dir3))
-
-!         w2 = merge( w1D(j,N(dir2)), one, N(dir2) > 1 )
-!         w3 = merge( w1D(j,N(dir3)), one, N(dir3) > 1 )
-!         wts(m) = w2 * w3
-!         !wts(m)      = w1D(i,N(dir2))*w1D(j,N(dir3))
-!       end do
-!     end do
-!   end subroutine face_quad_3D
   
   pure elemental subroutine create_reference_quad( this, n_dim, n_quad, include_ends, status )
     use set_constants, only : zero, one
@@ -4130,125 +4102,126 @@ contains
     call LegendreGaussNodesAndWeights(n_quad-1, pts_1D, wts_1D)
   end subroutine gauss_1D
 
-  pure subroutine gauss_1D_w_ends(n_quad,pts_1D,wts_1D)
+  pure subroutine gauss_1D_w_ends(n_quad,pts_1D,wts_1D,include_ends,n_out,s,e,o)
     use set_constants, only : one
-    integer,                       intent(in)  :: n_quad
+    integer,                         intent(in)  :: n_quad
     real(dp), dimension(0:n_quad+1), intent(out) :: pts_1D
     real(dp), dimension(0:n_quad+1), intent(out) :: wts_1D
+    logical,  optional,              intent(in)  :: include_ends
+    integer,  optional,              intent(out) :: n_out, s, e, o
+    logical :: include_ends_
+    include_ends_ = .false.
+    if ( present(include_ends) ) include_ends_ = include_ends
     pts_1D = zero; pts_1D(0) = -one; pts_1D(n_quad+1) = one
     wts_1D = zero
     call gauss_1D(n_quad,pts_1D(1:n_quad),wts_1D(1:n_quad))
+    if ( include_ends_ ) then
+      if ( present(n_out) ) n_out = n_quad+2
+      if ( present(s)     ) s     = 0
+      if ( present(e)     ) e     = n_quad+1
+      if ( present(o)     ) o     = 1
+    else
+      if ( present(n_out) ) n_out = n_quad
+      if ( present(s)     ) s     = 1
+      if ( present(e)     ) e     = n_quad
+      if ( present(o)     ) o     = 0
+    end if
   end subroutine gauss_1D_w_ends
 
-  pure subroutine create_quad_ref_1D( quad_order, quad_ref, include_ends, nq )
+  pure subroutine create_quad_ref_1D( quad_order, quad_ref, include_ends, nq, loc )
+    use index_conversion, only : get_dim_order
     integer,           intent(in)  :: quad_order
     type(quad_t),      intent(out) :: quad_ref
     logical, optional, intent(in)  :: include_ends
     integer, optional, intent(in)  :: nq
-    logical :: include_ends_
+    integer, dimension(3), optional, intent(in) :: loc
     real(dp), dimension(:), allocatable :: pts_1D
     real(dp), dimension(:), allocatable :: wts_1D
-    integer, dimension(2) :: end_pts
-    integer :: n_quad, n_gauss, i
-    include_ends_ =.false.
-    if ( present(include_ends) ) include_ends_ = include_ends
+    integer, dimension(3) :: dir, end_pt
+    integer :: n_quad, n_gauss
+    integer :: start_idx, end_idx
+    integer :: i
+    dir     = [(i,i=1,3)]
+    end_pt  = 0
+    if ( present(loc) ) call get_dim_order(loc,dir,end_pt)
     n_gauss = gauss_1D_size( quad_order )
     if ( present(nq) ) n_gauss = nq
-    
-    if (include_ends_) then
-      allocate( pts_1D(0:n_gauss+1) )
-      allocate( wts_1D(0:n_gauss+1) )
-      call gauss_1D_w_ends( n_gauss, pts_1D, wts_1D )
-      n_quad = n_gauss + 2
-    else
-      allocate( pts_1D(n_gauss) )
-      allocate( wts_1D(n_gauss) )
-      call gauss_1D( n_gauss, pts_1D, wts_1D )
-      n_quad = n_gauss
-    end if
+    allocate( pts_1D(0:n_gauss+1), wts_1D(0:n_gauss+1) )
+    call gauss_1D_w_ends( n_gauss, pts_1D, wts_1D, include_ends=include_ends, n_out=n_quad, s=start_idx, e=end_idx )
     call quad_ref%destroy()
     call quad_ref%create( n_quad )
-    quad_ref%quad_wts      = pack(wts_1D,.true.)
-    quad_ref%quad_pts(1,:) = pack(pts_1D,.true.)
+    quad_ref%quad_wts           = wts_1D(start_idx:end_idx)
+    quad_ref%quad_pts(dir(1),:) = pts_1D(start_idx:end_idx)
+    quad_ref%quad_pts(dir(2),:) = real( end_pt(2), dp )
+    quad_ref%quad_pts(dir(3),:) = real( end_pt(3), dp )
     deallocate( pts_1D, wts_1D )
   end subroutine create_quad_ref_1D
 
-  pure subroutine create_quad_ref_2D( quad_order, quad_ref, include_ends, nq )
-    use set_constants, only : zero
-    integer,      intent(in)  :: quad_order
-    type(quad_t), intent(out) :: quad_ref
-    logical, optional, intent(in)  :: include_ends
-    integer, optional, intent(in)  :: nq
-    logical :: include_ends_
-    integer :: n_quad, n_gauss
-    integer :: i, j, cnt, o
+  pure subroutine create_quad_ref_2D( quad_order, quad_ref, include_ends, nq, loc )
+    use index_conversion, only : get_dim_order
+    integer,                          intent(in)  :: quad_order
+    type(quad_t),                     intent(out) :: quad_ref
+    logical,                optional, intent(in)  :: include_ends
+    integer,                optional, intent(in)  :: nq
+    integer,  dimension(3), optional, intent(in)  :: loc
     real(dp), dimension(:), allocatable :: pts_1D
     real(dp), dimension(:), allocatable :: wts_1D
-    include_ends_ =.false.
-    if ( present(include_ends) ) include_ends_ = include_ends
+    integer, dimension(3) :: dir, end_pt
+    integer :: n_quad, n_gauss
+    integer :: offset
+    integer :: i, j, cnt
+    dir     = [(i,i=1,3)]
+    end_pt  = 0
+    if ( present(loc) ) call get_dim_order(loc,dir,end_pt)
     n_gauss = gauss_1D_size( quad_order )
     if ( present(nq) ) n_gauss = nq
-    if (include_ends_) then
-      allocate( pts_1D(0:n_gauss+1) )
-      allocate( wts_1D(0:n_gauss+1) )
-      call gauss_1D_w_ends( n_gauss, pts_1D, wts_1D )
-      n_quad = n_gauss + 2 
-      o = 1 
-    else
-      allocate( pts_1D(n_gauss) )
-      allocate( wts_1D(n_gauss) )
-      call gauss_1D( n_gauss, pts_1D, wts_1D )
-      n_quad = n_gauss
-      o = 0
-    end if
+    allocate( pts_1D(0:n_gauss+1), wts_1D(0:n_gauss+1) )
+    call gauss_1D_w_ends( n_gauss, pts_1D, wts_1D, include_ends=include_ends, n_out=n_quad, o=offset )
     call quad_ref%destroy()
     call quad_ref%create( n_quad**2 )
     cnt = 0
-    do j = 1-o, n_gauss+o
-      do i = 1-o, n_gauss+o
+    do j = 1-offset, n_gauss+offset
+      do i = 1-offset, n_gauss+offset
         cnt = cnt + 1
-        quad_ref%quad_pts(:,cnt) = [ pts_1D(i), pts_1D(j), zero ]
-        quad_ref%quad_wts(cnt) = wts_1D(i)*wts_1D(j)
+        quad_ref%quad_wts(cnt)        = wts_1D(i)*wts_1D(j)
+        quad_ref%quad_pts(dir(1),cnt) = pts_1D(i)
+        quad_ref%quad_pts(dir(2),cnt) = pts_1D(j)
+        quad_ref%quad_pts(dir(3),cnt) = real( end_pt(3), dp )
       end do
     end do
     deallocate( pts_1D, wts_1D )
   end subroutine create_quad_ref_2D
 
-  pure subroutine create_quad_ref_3D( quad_order, quad_ref, include_ends, nq )
+  pure subroutine create_quad_ref_3D( quad_order, quad_ref, include_ends, nq, loc )
+    use index_conversion, only : get_dim_order
     integer,      intent(in)  :: quad_order
     type(quad_t), intent(out) :: quad_ref
     logical, optional, intent(in) :: include_ends
     integer, optional, intent(in)  :: nq
-    logical :: include_ends_
-    integer :: n_quad, n_gauss
-    integer :: i, j, k, cnt, o
+    integer,  dimension(3), optional, intent(in)  :: loc
     real(dp), dimension(:), allocatable :: pts_1D
     real(dp), dimension(:), allocatable :: wts_1D
-    include_ends_ =.false.
-    if ( present(include_ends) ) include_ends_ = include_ends
+    integer, dimension(3) :: dir, end_pt
+    integer :: n_quad, n_gauss
+    integer :: start_idx, end_idx, offset
+    integer :: i, j, k, cnt
+    dir     = [(i,i=1,3)]
+    end_pt  = 0
+    if ( present(loc) ) call get_dim_order(loc,dir,end_pt)
     n_gauss = gauss_1D_size( quad_order )
     if ( present(nq) ) n_gauss = nq
-    if (include_ends_) then
-      allocate( pts_1D(0:n_gauss+1) )
-      allocate( wts_1D(0:n_gauss+1) )
-      call gauss_1D_w_ends( n_gauss, pts_1D, wts_1D )
-      n_quad = n_gauss + 2 
-      o = 1 
-    else
-      allocate( pts_1D(n_gauss) )
-      allocate( wts_1D(n_gauss) )
-      call gauss_1D( n_gauss, pts_1D, wts_1D )
-      n_quad = n_gauss
-      o = 0
-    end if
+    allocate( pts_1D(0:n_gauss+1), wts_1D(0:n_gauss+1) )
+    call gauss_1D_w_ends( n_gauss, pts_1D, wts_1D, include_ends=include_ends, n_out=n_quad, o=offset )
     call quad_ref%destroy()
     call quad_ref%create( n_quad**3 )
     cnt = 0
-    do k = 1-o, n_gauss+o
-      do j = 1-o, n_gauss+o
-        do i = 1-o, n_gauss+o
+    do k = 1-offset, n_gauss+offset
+      do j = 1-offset, n_gauss+offset
+        do i = 1-offset, n_gauss+offset
           cnt = cnt + 1
-          quad_ref%quad_pts(:,cnt) = [ pts_1D(i), pts_1D(j), pts_1D(k) ]
+          quad_ref%quad_pts(dir(1),cnt) = pts_1D(i)
+          quad_ref%quad_pts(dir(2),cnt) = pts_1D(j)
+          quad_ref%quad_pts(dir(3),cnt) = pts_1D(k)
           quad_ref%quad_wts(cnt) = wts_1D(i)*wts_1D(j)*wts_1D(k)
         end do
       end do
@@ -4256,14 +4229,15 @@ contains
     deallocate( pts_1D, wts_1D )
   end subroutine create_quad_ref_3D
 
-  pure subroutine map_quad_ref_to_physical_0D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+  pure subroutine map_quad_ref_to_physical_0D( X1, X2, X3, interpolant, quad_ref, quad_physical, vol, centroid )
     use interpolant_derived_type, only : interpolant_t
-    use set_constants,            only : one
+    use set_constants,            only : zero, one
     real(dp),               intent(in)  :: X1, X2, X3
     type(interpolant_t),    intent(in)  :: interpolant
     type(quad_t),           intent(in)  :: quad_ref
     type(quad_t),           intent(out) :: quad_physical
-    real(dp) :: dS
+    real(dp),     optional, intent(out) :: vol
+    real(dp), dimension(3), optional, intent(out) :: centroid
     integer  :: n
     call quad_physical%create(quad_ref%n_quad)
     do n = 1,quad_ref%n_quad
@@ -4272,14 +4246,18 @@ contains
       quad_physical%quad_pts(3,n) = X3
       quad_physical%quad_wts(n) = one
     end do
+    if ( present(vol) ) vol = zero
+    if ( present(centroid) ) centroid = [X1,X2,X3]
   end subroutine map_quad_ref_to_physical_0D
 
-  pure subroutine map_quad_ref_to_physical_1D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+  pure subroutine map_quad_ref_to_physical_1D( X1, X2, X3, interpolant, quad_ref, quad_physical, vol, centroid )
     use interpolant_derived_type, only : interpolant_t
     real(dp), dimension(:), intent(in)  :: X1, X2, X3
     type(interpolant_t),    intent(in)  :: interpolant
     type(quad_t),           intent(in)  :: quad_ref
     type(quad_t),           intent(out) :: quad_physical
+    real(dp),     optional, intent(out) :: vol
+    real(dp), dimension(3), optional, intent(out) :: centroid
     real(dp) :: dS
     integer  :: n
     call quad_physical%create(quad_ref%n_quad)
@@ -4287,14 +4265,19 @@ contains
       call interpolant%map_point_3D_curve( [quad_ref%quad_pts(1,n)], X1, X2, X3, quad_physical%quad_pts(:,n), dS )
       quad_physical%quad_wts(n) = dS * quad_ref%quad_wts(n)
     end do
+    dS = sum(quad_physical%quad_wts)
+    if ( present(vol) ) vol = dS
+    if ( present(centroid) ) centroid = quad_physical%integrate(3,quad_physical%quad_pts) /dS
   end subroutine map_quad_ref_to_physical_1D
 
-  pure subroutine map_quad_ref_to_physical_2D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+  pure subroutine map_quad_ref_to_physical_2D( X1, X2, X3, interpolant, quad_ref, quad_physical, vol, centroid )
     use interpolant_derived_type, only : interpolant_t
     real(dp), dimension(:,:), intent(in)  :: X1, X2, X3
     type(interpolant_t),      intent(in)  :: interpolant
     type(quad_t),             intent(in)  :: quad_ref
     type(quad_t),             intent(out) :: quad_physical
+    real(dp),       optional, intent(out) :: vol
+    real(dp), dimension(3), optional, intent(out) :: centroid
     real(dp) :: dA
     integer  :: n
     call quad_physical%create(quad_ref%n_quad)
@@ -4302,14 +4285,19 @@ contains
       call interpolant%map_point_3D_surface( quad_ref%quad_pts(1:2,n), X1, X2, X3, quad_physical%quad_pts(:,n), dA )
       quad_physical%quad_wts(n) = dA * quad_ref%quad_wts(n)
     end do
+    dA = sum(quad_physical%quad_wts)
+    if ( present(vol) ) vol = dA
+    if ( present(centroid) ) centroid = quad_physical%integrate(3,quad_physical%quad_pts) /dA
   end subroutine map_quad_ref_to_physical_2D
 
-  pure subroutine map_quad_ref_to_physical_3D( X1, X2, X3, interpolant, quad_ref, quad_physical )
+  pure subroutine map_quad_ref_to_physical_3D( X1, X2, X3, interpolant, quad_ref, quad_physical, vol, centroid )
     use interpolant_derived_type, only : interpolant_t
     real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
     type(interpolant_t),        intent(in)  :: interpolant
     type(quad_t),               intent(in)  :: quad_ref
     type(quad_t),               intent(out) :: quad_physical
+    real(dp),         optional, intent(out) :: vol
+    real(dp), dimension(3), optional, intent(out) :: centroid
     real(dp) :: dV
     integer  :: n
     call quad_physical%create(quad_ref%n_quad)
@@ -4317,22 +4305,28 @@ contains
       call interpolant%map_point_3D_volume( quad_ref%quad_pts(1:3,n), X1, X2, X3, quad_physical%quad_pts(:,n), dV )
       quad_physical%quad_wts(n) = dV * quad_ref%quad_wts(n)
     end do
+    dV = sum(quad_physical%quad_wts)
+    if ( present(vol) ) vol = dV
+    if ( present(centroid) ) centroid = quad_physical%integrate(3,quad_physical%quad_pts) /dV
   end subroutine map_quad_ref_to_physical_3D
 
-
-
-  pure subroutine map_quad_ref_to_physical( X1, X2, X3, loc, interpolant, quad_ref, quad_physical, face_vec, status )
-    use set_constants,                        only : zero
-    use index_conversion,                     only : get_reshape_indices
+  pure subroutine map_quad_ref_to_physical( X1, X2, X3, loc, interpolant, quad_ref, quad_physical, face_vec, normal, centroid, vol, status )
+    use set_constants,            only : zero
+    use index_conversion,         only : get_reshape_indices
     use interpolant_derived_type, only : interpolant_t
     use vector_derived_type,      only : vec_t
-    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
-    integer,  dimension(3),     intent(in)  :: loc
-    type(interpolant_t),        intent(in)  :: interpolant
-    type(quad_t),               intent(in)  :: quad_ref
-    type(quad_t),               intent(out) :: quad_physical
-    type(vec_t), optional,      intent(out) :: face_vec
-    integer, optional,          intent(out) :: status
+    real(dp), dimension(:,:,:),       intent(in)  :: X1, X2, X3
+    integer,  dimension(3),           intent(in)  :: loc
+    type(interpolant_t),              intent(in)  :: interpolant
+    type(quad_t),                     intent(in)  :: quad_ref
+    type(quad_t),                     intent(out) :: quad_physical
+    type(vec_t),         optional, intent(out) :: face_vec
+    real(dp), dimension(3), optional, intent(out) :: normal
+    real(dp), dimension(3), optional, intent(out) :: centroid
+    real(dp),               optional, intent(out) :: vol
+    integer,                optional, intent(out) :: status
+    type(quad_t)   :: quad_ref_tmp
+    type(vec_t) :: face_vec_tmp
     real(dp), allocatable, dimension(:,:) :: X1_tmp, X2_tmp, X3_tmp
     integer, dimension(3) :: idx_start, idx_end, sz_in, sz_out
     integer  :: sz_cnt, dir
@@ -4344,11 +4338,7 @@ contains
       call map_quad_ref_to_physical_0D( X1(idx_end(1),idx_end(2),idx_end(3)),  &
                                         X2(idx_end(1),idx_end(2),idx_end(3)),  &
                                         X3(idx_end(1),idx_end(2),idx_end(3)),  &
-                                        interpolant, quad_ref, quad_physical )
-      if ( present(face_vec) ) then
-        call set_face_normals_1D( X1, X2, X3, dir, interpolant, quad_ref, face_vec )
-      end if
-
+                                        interpolant, quad_ref, quad_physical, vol=vol, centroid=centroid )
     case(1)
       allocate( X1_tmp(sz_out(1),1), X2_tmp(sz_out(1),1), X3_tmp(sz_out(1),1) )
       X1_tmp(:,1) = reshape( X1( idx_start(1):idx_end(1), &
@@ -4361,11 +4351,7 @@ contains
                                  idx_start(2):idx_end(2), &
                                  idx_start(3):idx_end(3)), [sz_out(1)] )
       call map_quad_ref_to_physical_1D( X1_tmp(:,1), X2_tmp(:,1), X3_tmp(:,1), &
-                                        interpolant, quad_ref, quad_physical )
-      if ( present(face_vec) ) then
-        call set_face_normals_3D( X1, X2, X3, &
-                                  dir, interpolant, quad_ref, face_vec )
-      end if
+                                        interpolant, quad_ref, quad_physical, vol=vol, centroid=centroid )
     case(2)
       allocate( X1_tmp(sz_out(1),sz_out(2)) )
       allocate( X2_tmp(sz_out(1),sz_out(2)) )
@@ -4379,93 +4365,129 @@ contains
       X3_tmp = reshape( X3( idx_start(1):idx_end(1), &
                             idx_start(2):idx_end(2), &
                             idx_start(3):idx_end(3)), sz_out(1:2) )
-      call map_quad_ref_to_physical_2D(X1_tmp,X2_tmp,X3_tmp,interpolant,quad_ref,quad_physical)
-      if ( present(face_vec) ) then
-        call set_face_normals_3D( X1, X2, X3, &
-                                  dir, interpolant, quad_ref, face_vec )
-      end if
+      call map_quad_ref_to_physical_2D(X1_tmp,X2_tmp,X3_tmp,interpolant,quad_ref,quad_physical,vol=vol, centroid=centroid)
     case(3)
-      call map_quad_ref_to_physical_3D(X1,X2,X3,interpolant,quad_ref,quad_physical)
-      if ( present(face_vec) ) then
-        if (present(status)) status = -1
-      end if
+      call map_quad_ref_to_physical_3D(X1,X2,X3,interpolant,quad_ref,quad_physical,vol=vol, centroid=centroid)
     case default
       if (present(status)) status = -1
     end select
 
+    if ( present(face_vec) .or. present(normal) ) then
+      select case(sz_cnt)
+      case(0)
+        call set_face_normals_1D( X1, X2, X3, dir, interpolant, quad_ref, face_vec=face_vec, normal=normal )
+      case(1)
+        call create_quad_ref_1D(0,quad_ref_tmp,nq=quad_ref%n_quad,loc=loc)
+        call set_face_normals_2D( X1, X2, X3, dir, interpolant, quad_ref_tmp, face_vec=face_vec, normal=normal )
+      case(2)
+        call create_quad_ref_2D(0,quad_ref_tmp,nq=int(sqrt(real(quad_ref%n_quad))),loc=loc)
+        call set_face_normals_3D( X1, X2, X3, dir, interpolant, quad_ref_tmp, face_vec=face_vec, normal=normal )
+      case default
+        if (present(status)) status = -1
+      end select
+    end if
+
+    call quad_ref_tmp%destroy()
+    call face_vec_tmp%destroy()
     if ( allocated(X1_tmp) ) deallocate( X1_tmp )
     if ( allocated(X2_tmp) ) deallocate( X2_tmp )
     if ( allocated(X3_tmp) ) deallocate( X3_tmp )
 
   end subroutine map_quad_ref_to_physical
 
-  pure subroutine set_face_normals_1D( X1, X2, X3, dir, interpolant, quad_ref, face_vec )
-    use set_constants,           only : one
+  pure subroutine set_face_normals_1D( X1, X2, X3, dir, interpolant, quad_ref, face_vec, normal )
+    use set_constants,            only : zero, one
     use interpolant_derived_type, only : interpolant_t
     use vector_derived_type,      only : vec_t
     
-    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
-    integer,                    intent(in)  :: dir
-    type(interpolant_t),        intent(in)  :: interpolant
-    type(quad_t),               intent(in)  :: quad_ref
-    type(vec_t),                intent(out) :: face_vec
-    integer  :: n
+    real(dp), dimension(:,:,:),       intent(in)  :: X1, X2, X3
+    integer,                          intent(in)  :: dir
+    type(interpolant_t),              intent(in)  :: interpolant
+    type(quad_t),                     intent(in)  :: quad_ref
+    type(vec_t),         optional, intent(out) :: face_vec
+    real(dp), dimension(3), optional, intent(out) :: normal
 
-    call face_vec%create(quad_ref%n_quad)
-
-    do n = 1,quad_ref%n_quad
-      face_vec%v(1,n) = one
-    end do
+    if ( present(face_vec) ) then
+      call face_vec%create(quad_ref%n_quad)
+        face_vec%v(1,:) = one
+    end if
+    if ( present(normal) ) then
+      normal    = zero
+      normal(1) = one
+    end if
   end subroutine set_face_normals_1D
 
-  pure subroutine set_face_normals_2D( X1, X2, X3, dir, interpolant, quad_ref, face_vec )
+  pure subroutine set_face_normals_2D( X1, X2, X3, dir, interpolant, quad_ref, face_vec, normal )
     use interpolant_derived_type, only : interpolant_t
     use vector_derived_type,      only : vec_t
 
-    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
-    integer,                    intent(in)  :: dir
-    type(interpolant_t),        intent(in)  :: interpolant
-    type(quad_t),               intent(in)  :: quad_ref
-    type(vec_t),                intent(out) :: face_vec
+    real(dp), dimension(:,:,:),       intent(in)  :: X1, X2, X3
+    integer,                          intent(in)  :: dir
+    type(interpolant_t),              intent(in)  :: interpolant
+    type(quad_t),                     intent(in)  :: quad_ref
+    type(vec_t),         optional, intent(out) :: face_vec
+    real(dp), dimension(3), optional, intent(out) :: normal
     integer  :: n
     real(dp), dimension(3,3) :: Nvec
-
-    call face_vec%create(quad_ref%n_quad)
+    real(dp), dimension(3)   :: tmp_vec
+    real(dp), dimension(3,quad_ref%n_quad) :: tmp_array
 
     do n = 1,quad_ref%n_quad
-      Nvec = interpolant%normal_vectors( quad_ref%quad_pts(1:3,n), X1, X2, X3 )
-      face_vec%v(1:2,n) = Nvec(1:2,dir)
+      Nvec = interpolant%normal_vectors_2D( quad_ref%quad_pts(1:3,n), X1, X2, X3 )
+      tmp_array(:,n) = Nvec(:,dir)
     end do
+
+    tmp_vec = quad_ref%integrate(3,tmp_array)
+    tmp_vec = tmp_vec/norm2(tmp_vec)
+
+    if ( present(face_vec) ) then
+      call face_vec%create(quad_ref%n_quad)
+      if ( ( size(X1,1) == 2 ) .and. ( size(X1,2) == 2 ) ) then
+        do n = 1,quad_ref%n_quad
+          face_vec%v(:,n) = tmp_vec
+        end do
+      else
+        face_vec%v = tmp_array
+      end if
+    end if
+
+    if ( present(normal) ) normal = tmp_vec
+
   end subroutine set_face_normals_2D
 
-  pure subroutine set_face_normals_3D( X1, X2, X3, dir, interpolant, quad_ref, face_vec )
+  pure subroutine set_face_normals_3D( X1, X2, X3, dir, interpolant, quad_ref, face_vec, normal )
     use set_constants,           only : zero, one
     use math,                    only : vector_norm
     use interpolant_derived_type, only : interpolant_t
     use vector_derived_type,      only : vec_t
     
 
-    real(dp), dimension(:,:,:), intent(in)  :: X1, X2, X3
-    integer,                    intent(in)  :: dir
-    type(interpolant_t),        intent(in)  :: interpolant
-    type(quad_t),               intent(in)  :: quad_ref
-    type(vec_t),                intent(out) :: face_vec
+    real(dp), dimension(:,:,:),       intent(in)  :: X1, X2, X3
+    integer,                          intent(in)  :: dir
+    type(interpolant_t),              intent(in)  :: interpolant
+    type(quad_t),                     intent(in)  :: quad_ref
+    type(vec_t),         optional, intent(out) :: face_vec
+    real(dp), dimension(3), optional, intent(out) :: normal
     integer  :: n
     real(dp), dimension(3,3) :: Nvec
-    real(dp), dimension(3)   :: point
+    real(dp), dimension(3)   :: tmp_vec
+    real(dp), dimension(3,quad_ref%n_quad) :: tmp_array
 
-    call face_vec%create(quad_ref%n_quad)
-
-    ! integer, dimension(3), parameter :: ijk = [1,2,3]
-    ! integer, dimension(3), parameter :: kij = cshift(ijk,1)
-    ! integer, dimension(3), parameter :: jki = cshift(kij,1)
     do n = 1,quad_ref%n_quad
-      point = zero
-      point(dir) = -one
-      point(mod(dir,3) + 1)   = quad_ref%quad_pts(1,n)
-      Nvec = interpolant%normal_vectors( point, X1, X2, X3 )
-      face_vec%v(:,n) = Nvec(:,dir)
+      Nvec = interpolant%normal_vectors_2D( quad_ref%quad_pts(1:3,n), X1, X2, X3 )
+      tmp_array(:,n) = Nvec(:,dir)
     end do
+
+    tmp_vec = quad_ref%integrate(3,tmp_array)
+    tmp_vec = tmp_vec/norm2(tmp_vec)
+
+    if ( present(face_vec) ) then
+      call face_vec%create(quad_ref%n_quad)
+      face_vec%v = tmp_array
+    end if
+
+    if ( present(normal) ) normal = tmp_vec
+
   end subroutine set_face_normals_3D
 
 end module quadrature_derived_type
